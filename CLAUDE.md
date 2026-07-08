@@ -10,7 +10,7 @@ Node.js 18+, npm als Paketmanager (kein yarn/pnpm-Mix). Falls das Phaser+React+T
 
 ## Zuerst lesen
 
-Bevor du etwas implementierst oder eine Design-Entscheidung triffst, in dieser Reihenfolge:
+Zuerst `STATUS.md` (Repo-Root) für den aktuellen Fortschritt, danach in dieser Reihenfolge:
 
 1. `docs/game-spec.md` — was gebaut werden soll (Layer 0 + Layer 1, 4 Automaten)
 2. `docs/implementation-plan.md` — Tech-Stack, Architektur, Ordnerstruktur, Phasenplan mit Abnahmekriterien
