@@ -16,7 +16,7 @@ Kernprinzip aller Automaten: **Plan → Ausführung beobachten → Ergebnis.** K
 
 ## 2. Layer 0: Der Durchbruch (Reveal)
 
-- Spieler startet direkt im Minispiel von **Automat 1** (Vorschlag: "Greed Run", siehe 4.2 – wegen der intuitivsten Kernidee als Einstieg. Zu bestätigen.)
+- Spieler startet direkt im Minispiel von **Automat 1** ("Greed Run", siehe 4.2 – bestätigt wegen der intuitivsten Kernidee als Einstieg)
 - Keine sichtbare Meta-UI zu Beginn (kein Hallen-HUD, kein Token-Zähler sichtbar oder nur minimal als "Punkte")
 - Nach Erreichen eines Fortschritts-Schwellenwerts (konkreter Wert: TBD, Richtwert 10–20 Minuten Spielzeit) löst der Durchbruch aus: kurze Übergangs-Sequenz/Kamerafahrt, danach Wechsel in die `HallScene`
 - **Wichtig laut Baukasten (1.8):** Dieser Überraschungseffekt wird nur hier verwendet. Automaten 2–4 bekommen jeweils einen eigenen kleinen Hook (siehe 4.x), keine Wiederholung des großen Reveals.
@@ -106,6 +106,6 @@ Alle vier teilen sich dieselben drei Kernsysteme (Details siehe `implementation-
 
 ## 6. Offene Design-Fragen
 
-- Welcher Automat startet Layer 0 – Bestätigung von "Greed Run" oder anderer Automat?
+- ~~Welcher Automat startet Layer 0~~ – entschieden: "Greed Run" (Automat 1)
 - Exakte Zahlenbalance (Payout-Tabellen, Schwellenwerte) – wird während Implementierung/Playtesting iterativ getunt, nicht vorab fixiert
 - Visueller Stil / Art Direction – nicht Teil dieser Spezifikation

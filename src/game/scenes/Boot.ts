@@ -1,22 +1,14 @@
 import { Scene } from 'phaser';
+import { getEntryPointMachine } from '../../data/machines.config';
 
-export class Boot extends Scene
-{
-    constructor ()
-    {
+// Keine Assets zu laden (noch keine Grafik-/Sound-Assets, CLAUDE.md) -- geht
+// direkt in die generische MachineScene mit dem Layer-0-Automaten.
+export class Boot extends Scene {
+    constructor() {
         super('Boot');
     }
 
-    preload ()
-    {
-        //  The Boot Scene is typically used to load in any assets you require for your Preloader, such as a game logo or background.
-        //  The smaller the file size of the assets, the better, as the Boot Scene itself has no preloader.
-
-        this.load.image('background', 'assets/bg.png');
-    }
-
-    create ()
-    {
-        this.scene.start('Preloader');
+    create(): void {
+        this.scene.start('Machine', { machineId: getEntryPointMachine().id });
     }
 }
