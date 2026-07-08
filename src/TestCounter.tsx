@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import Decimal from 'break_infinity.js';
 
 // Phase-0-Sanity-Check: belegt, dass break_infinity.js eingebunden ist und
-// mit groesseren Zahlen rechnet. Wird in Phase 1 durch EconomyStore ersetzt.
+// mit groesseren Zahlen rechnet. Wird ersetzt, sobald die UI an den
+// echten EconomyStore (src/engine) angebunden wird.
 export function TestCounter() {
     const countRef = useRef(new Decimal(0));
     const [display, setDisplay] = useState(countRef.current.toString());
