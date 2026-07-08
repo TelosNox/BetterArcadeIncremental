@@ -1,0 +1,36 @@
+{
+  "name": "better-arcade-incremental",
+  "description": "Arcade-Incremental-Browserspiel (Arbeitstitel). Statisches Browserspiel, gehostet auf GitHub Pages.",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node log.js dev & vite --config vite/config.dev.mjs",
+    "build": "node log.js build & vite build --config vite/config.prod.mjs",
+    "dev-nolog": "vite --config vite/config.dev.mjs",
+    "build-nolog": "vite build --config vite/config.prod.mjs",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "break_infinity.js": "^2.2.0",
+    "phaser": "^3.90.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9.22.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.19",
+    "globals": "^16.0.0",
+    "terser": "^5.28.1",
+    "typescript": "~5.7.2",
+    "typescript-eslint": "^8.26.1",
+    "vite": "^6.3.1",
+    "vitest": "^3.0.0"
+  }
+}
