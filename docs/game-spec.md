@@ -64,10 +64,11 @@ Automat (Skill-Score) → gleichzeitig zwei Ausgaben pro Aktion:
 
 ## 4. Die 4 Automaten
 
-Alle vier teilen sich dieselben drei Kernsysteme (Details siehe `implementation-plan.md`, Abschnitt Engine):
+Automaten 2–4 teilen sich weiterhin dieselben Kernsysteme (Details siehe `implementation-plan.md`, Abschnitt Engine):
 - **PatternEngine** – probabilistische Zustandsübergänge, progressive Teilaufdeckung durch Upgrades
-- **PushYourLuckEngine** – Meilenstein-Schwellen, Banking-Option, Safe/Balanced/Risky-Aktionswahl mit sichtbarer Payout-Spanne
 - **AttendantEngine** – automatisierte Ausführung nach Musterkenntnis-Wert
+
+**Ausnahme Automat 1 ("Greed Run"):** Bekommt ab 2026-07-10 eine eigene, genre-spezifische Mechanik (5×5-Sektorenfeld statt zyklisches Pattern, siehe 4.2) — nutzt `PatternEngine` nicht mehr. Ein bewusstes Genre-Rework-Experiment, siehe CLAUDE.md für die zugehörige Architektur-Konsequenz (eigene Szene statt der bisher einzigen generischen `MachineScene.ts`). Gemeinsam bleibt für alle vier Automaten die Hallen-Ökonomie (`EconomyStore`, Tickets/Automaten-Punkte, Meilensteine, Speicherstand).
 
 ### 4.1 Gemeinsame Rundenstruktur (gilt für alle 4 Automaten)
 
@@ -194,12 +195,45 @@ mehr selbst auswerten. Verbindliche Korrekturen:
   bei voller Tiefe muss die GESAMTE geplante Warteschlange sichtbar sein,
   keine strukturell immer-blinde letzte Position.
 
-### 4.2 Automat 1 — "Greed Run" (Pac-Man-Twist)
+### 4.2 Automat 1 — "Greed Run" (Pac-Man-Twist, ab 2026-07-10 eigene Mechanik — Genre-Rework-Experiment)
 
-- **Thema:** Kleine Figur bewegt sich auf vorab platzierten Richtungs-Tokens durch ein Raster, sammelt Punkte, muss Patrouillen-Gegnern ausweichen
-- **Pattern-Basis:** Patrouillenrouten sind zu Beginn nur teilweise sichtbar (nächster Schritt), Upgrades zeigen mehr Vorschau
-- **Risiko-Achse:** Wie weit ins Raster hinein plant der Spieler, bevor er umkehrt/den Lauf sichert
-- **Warum Layer-0-Kandidat:** Kernidee (Risiko vs. Gier beim Sammeln) ist ohne Erklärung sofort verständlich
+**Ersetzt ab hier die gemeinsame Zyklus-Mechanik aus 4.1/4.1b/4.1c vollständig für Automat 1.** Automaten 2–4 bleiben vorerst unverändert bei 4.1/4.1b/4.1c, bis sich dieses Experiment im Playtest bewährt hat — bewusst nur EIN Automat auf einmal umgebaut, nicht alle vier gleichzeitig.
+
+**Kernidee:** 5×5-Sektorenfeld (25 Sektoren), Spieler startet im Mittelfeld (Sektor 3,3 bei 1-indizierter Zählung), bewegt sich pro Zug in eine von 4 Richtungen (kein Diagonal-, kein Stehenbleiben-Zug in dieser Version).
+
+**Sektorinhalt:** Pro Run einmalig fest vorab generiert (das bestehende Prinzip "festes Pattern pro Run" bleibt erhalten). Jeder der 24 Nicht-Start-Sektoren ist genau eine von vier Kategorien: Geist (negativer Payout), Punkte (kleiner positiver Payout, der Standard-/Mehrheitsfall), Leer (kein Payout), Bonus-Frucht (größerer positiver Payout, selten). Kein Powerpille-Mechanismus in dieser Version.
+
+**Verbrauchsregel:** Sobald ein Sektor betreten wird, gilt sein ursprünglicher Inhalt als ausgelöst und wandelt sich für den Rest des Runs zu Leer — einheitlich für alle vier Kategorien inklusive Geist (keine zweite Strafe an derselben Stelle).
+
+**Sicherheits-Constraint bei der Generierung:** Unter den bis zu 4 direkten Nachbarn des Startfelds befindet sich höchstens 1 Geist. Das ist eine weiche Wahrscheinlichkeits-Reduktion, keine harte Garantie für den Rest des Felds.
+
+**Blind-Erwartungswert-Garantie (automatisiert zu prüfen, gleiches Prinzip wie bei den anderen Automaten):** Über die gewählte Kategorien-Häufigkeit der 24 Nicht-Start-Sektoren gemittelt muss der erwartete Payout eines komplett unvorbereiteten Zugs (ganz ohne genutzte Vorschau-Information) positiv bleiben.
+
+**Drei unabhängige, ticket-finanzierte automaten-interne Upgrade-Achsen** (ersetzen depthUpgrades/precisionUpgrades aus dem gemeinsamen Modell konzeptionell — technisch ggf. weiterhin ähnliche Interfaces mit anderem Zahlenbereich, Ermessen von Claude Code):
+
+1. **Sichtweite** (1–4, Start bei 1): wie viele Schritte entlang des tatsächlich gegangenen Pfades ab der AKTUELLEN Position vorausgesehen werden (Manhattan-Distanz-Radius, nach jedem Zug neu um die neue Position zentriert). Bei Sichtweite 4 sind ab der Mitte des 5×5-Felds alle Ecken erreichbar/sichtbar (Manhattan-Distanz Mitte→Ecke = 4).
+2. **Präzision** (0–3, Start bei 1): wie viele der vier Kategorien pro sichtbarem Sektor bereits zweifelsfrei aufgelöst sind. Die Reihenfolge der Auflösung ist NICHT neutral/zufällig, sondern richtet sich nach dem gewählten Fokus (siehe unten). Bei Präzision 3 ist der Inhalt vollständig bekannt, unabhängig vom Fokus.
+3. **Aktionsbudget** (Start bei 4, Obergrenze vorerst offen/iterativ zu bestimmen): wie viele Züge insgesamt pro Run möglich sind — unabhängig von der Sichtweite. Das ist eine bewusste Abweichung von der in 4.1c für die anderen Automaten festgelegten Regel "Warteschlangenlänge = Sichtweite": hier sinnvoll, weil man in einem Raster weiter laufen kann, als man aktuell sieht (Nebel-des-Krieges-Situation).
+
+**Fokus-Wahl (Sicher vs. Gier):** Pro Run genau einmal vor Rundenstart festgelegt, gilt für den gesamten Lauf, kein Wechsel während eines laufenden Runs.
+
+- **Sicher-Fokus:** Bei Präzision 1 wird zuerst zuverlässig aufgedeckt, ob ein sichtbarer Sektor ein Geist ist oder nicht.
+- **Gier-Fokus:** Bei Präzision 1 wird zuerst zuverlässig aufgedeckt, ob ein sichtbarer Sektor eine Bonus-Frucht ist oder nicht.
+- Bei Präzision 2/3 werden schrittweise weitere Kategorien in einer festen, fokus-abhängigen Reihenfolge zusätzlich aufgelöst (Ermessen von Claude Code für die genaue Sekundär-Reihenfolge, z. B. Sicher-Fokus: Geist → Bonus → Leer; Gier-Fokus: Bonus → Geist → Leer — Punkte ergibt sich jeweils durch Ausschluss der anderen drei).
+- Fokus-Wechsel ist kostenlos (kein Ticket-/Punktepreis), damit keine der beiden Strategien strukturell bevorzugt wird.
+- **UI-Ablauf:** Vor Rundenstart erscheint ein Popup mit den zwei Fokus-Optionen (keine Checkbox im Popup selbst). Sobald gewählt, zeigt ein permanenter HUD-Chip während des Laufs den aktiven Fokus inklusive einer Checkbox "für nächsten Lauf beibehalten" (Standard: aktiviert). Ist die Checkbox aktiv, startet der nächste Run direkt mit demselben Fokus ohne erneutes Popup; wird sie deaktiviert, erscheint das Popup beim nächsten Rundenstart erneut.
+
+**Ausdrücklich noch nicht Teil dieser Version** (bewusst zurückgestellt, nicht vergessen — Backlog für eine mögliche spätere Erweiterung): Powerpille/Geister-fressen-Mechanik, bewegliche Geister, Zeitlimit in der Planungsphase.
+
+**Rundenstruktur:** Bleibt im Kern "Planen → Ausführen/Zusehen → Ergebnis" (4.1) — eine Planungsrunde kann 1 bis zu (verbleibendes Aktionsbudget) Schritte umfassen, je nachdem wie weit der Spieler seiner aktuellen Sichtweite vertraut. Weiterhin kein Echtzeit-Reflex nötig, frei einteilbare Bedenkzeit.
+
+**Attendant-Automatisierung:** Die bestehende `AttendantEngine`-Mathematik (Erwartungswert über die stationäre Markov-Verteilung des zyklischen Patterns) passt nicht mehr direkt, da es kein zyklisches Pattern mehr gibt. Für diese Experimentierphase reicht eine grob vereinfachte Platzhalter-Schätzung (z. B. erwarteter Payout pro Zug basierend auf den Kategorien-Grundwahrscheinlichkeiten und dem aktuellen Fokus/Präzision, ohne echte Pfadplanung) — bitte in STATUS.md klar als bewusste Vereinfachung dokumentieren, keine perfekte Nachbildung erzwingen.
+
+**Ökonomie-Anbindung** (Tickets/Automaten-Punkte-Ausschüttung pro Zug, Meilenstein-Pips, Speicherstand-Mechanik) bleibt technisch unverändert (`EconomyStore`, Meilenstein-Logik) — nur die Zug-Auflösung und die Vorschau sind neu.
+
+**Speicherstand:** Da sich die interne Struktur für Automat 1 grundlegend ändert, `CURRENT_SAVE_VERSION` erneut erhöhen, alte Spielstände beim Laden ablehnen statt migrieren (etabliertes Vorgehen aus Phase 7d/7e).
+
+- **Warum Layer-0-Kandidat:** Kernidee (Risiko vs. Gier beim Sammeln) ist ohne Erklärung sofort verständlich — gilt mit dem neuen Feld-Modell unverändert weiter.
 
 ### 4.3 Automat 2 — "Trap Tunnels" (Dig-Dug/Q*bert-Twist)
 
