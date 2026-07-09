@@ -4,7 +4,6 @@ import {
     CHAMPIONS_LEDGER,
     GREED_RUN,
     MACHINES,
-    MACHINE_UNLOCK_COST,
     TRAP_TUNNELS,
     getEffectiveFailureChance,
     getEntryPointMachine,
@@ -74,16 +73,6 @@ describe('machines.config', () => {
                 }
             },
         );
-
-        it('MACHINE_UNLOCK_COST deckt alle Nicht-entryPoint-Automaten ab, mit steigenden Schwellen (game-spec.md 3.3)', () => {
-            const nonEntryPoint = MACHINES.filter((machine) => !machine.entryPoint);
-            for (const machine of nonEntryPoint) {
-                expect(MACHINE_UNLOCK_COST[machine.id]).toBeGreaterThan(0);
-            }
-            const costs = nonEntryPoint.map((machine) => MACHINE_UNLOCK_COST[machine.id]);
-            const sorted = [...costs].sort((a, b) => a - b);
-            expect(costs).toEqual(sorted);
-        });
     });
 
     describe('getEffectiveFailureChance', () => {

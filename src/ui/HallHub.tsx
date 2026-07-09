@@ -1,66 +1,38 @@
-import { useEffect, useState } from 'react';
 import { economyStore, persist } from '../game/economy';
-import { MACHINES, MACHINE_UNLOCK_COST } from '../data/machines.config';
+import { MACHINES } from '../data/machines.config';
+import { getMachineUnlockUpgrade, getTicketConversionRate } from '../data/hall.config';
 import { AttendantPanel } from './AttendantPanel';
+import { UpgradePanel } from './UpgradePanel';
+import { useEconomyRevision } from './useEconomyRevision';
 
 // Hallen-Grundgerüst (Layer 1, implementation-plan.md Abschnitt 2/4, Phase 4).
 // Zeigt freigeschaltete Automaten + Credits, erlaubt Rueckkehr in einen
 // Automaten, das AttendantPanel pro durchgespieltem Automat (Phase 5), sowie
-// (Phase 6) Freischalt-Logik fuer Automat 2-4 gegen Credits.
+// das UpgradePanel (Phase 7) fuer den gesamten Hallen-Upgrade-Kauf.
 // Liest EconomyStore nur ueber die definierte Schnittstelle (Architektur-
 // Kurzregel CLAUDE.md), kein eigener paralleler State.
 //
-// PLATZHALTER (siehe STATUS.md): Die Tickets->Credits-Umrechnung ist laut
-// implementation-plan.md eigentlich ein Hallen-Upgrade (Phase 7, eigenes
-// hall.config.ts). Ohne IRGENDEINE Umrechnung waeren Automat 2-4 aber nie
-// erreichbar (Credits blieben für immer 0) und Phase 6 liesse sich nicht
-// durchspielen -- deshalb hier ein fester, klar als vorlaeufig markierter
-// Kurs, der in Phase 7 durch das echte Upgrade-System ersetzt wird.
-const TICKET_CONVERSION_RATE = 1;
+// Seit Phase 7 gibt es nur noch EINEN Wirtschaftsmechanismus (PM-Vorgabe,
+// siehe STATUS.md): Ticket->Credits-Kurs und Automaten-Freischaltung kommen
+// beide aus hall.config.ts (echtes, kaufbares Upgrade-System) statt aus den
+// Phase-6-Platzhaltern (fester TICKET_CONVERSION_RATE, fest codierte
+// MACHINE_UNLOCK_COST). Das eigentliche Kaufen der Freischalt-Upgrades
+// passiert ausschliesslich im UpgradePanel unten, nicht mehr hier direkt --
+// diese Karten zeigen nur noch Status/Kosten an.
 
 interface HallHubProps {
     onSelectMachine: (machineId: string) => void;
-}
-
-// Re-Render bei relevanten EconomyStore-Events erzwingen, ohne den State
-// selbst zu duplizieren -- HallHub liest bei jedem Render frisch aus
-// economyStore.getState()/getCredits()/getTickets().
-function useEconomyRevision(): number {
-    const [revision, setRevision] = useState(0);
-
-    useEffect(() => {
-        const bump = () => setRevision((r) => r + 1);
-        const unsubscribers = [
-            economyStore.events.on('credits-changed', bump),
-            economyStore.events.on('tickets-changed', bump),
-            economyStore.events.on('machine-unlocked', bump),
-            economyStore.events.on('machine-completed', bump),
-            economyStore.events.on('attendant-knowledge-changed', bump),
-            economyStore.events.on('hall-upgrade-purchased', bump),
-            economyStore.events.on('state-loaded', bump),
-        ];
-        return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
-    }, []);
-
-    return revision;
 }
 
 export function HallHub({ onSelectMachine }: HallHubProps) {
     useEconomyRevision();
 
     const state = economyStore.getState();
+    const conversionRate = getTicketConversionRate(state.hallUpgrades);
 
     const handleConvert = (machineId: string) => {
-        economyStore.convertTicketsToCredits(machineId, TICKET_CONVERSION_RATE);
+        economyStore.convertTicketsToCredits(machineId, conversionRate);
         persist();
-    };
-
-    const handleUnlock = (machineId: string) => {
-        const cost = MACHINE_UNLOCK_COST[machineId];
-        if (economyStore.purchaseHallUpgrade(`unlock-${machineId}`, cost)) {
-            economyStore.unlockMachine(machineId);
-            persist();
-        }
     };
 
     return (
@@ -73,15 +45,11 @@ export function HallHub({ onSelectMachine }: HallHubProps) {
                     const isUnlocked = economyStore.isMachineUnlocked(machine.id);
 
                     if (!isUnlocked) {
-                        const cost = MACHINE_UNLOCK_COST[machine.id];
-                        const canAfford = economyStore.getCredits().gte(cost);
+                        const unlockUpgrade = getMachineUnlockUpgrade(machine.id);
                         return (
                             <div className="hall-hub__machine-card hall-hub__machine-card--locked" key={machine.id}>
                                 <h2>{machine.name}</h2>
-                                <p>Gesperrt</p>
-                                <button type="button" onClick={() => handleUnlock(machine.id)} disabled={!canAfford}>
-                                    Freischalten ({cost} Credits)
-                                </button>
+                                <p>Gesperrt ({unlockUpgrade?.cost ?? '?'} Credits, siehe Hallen-Upgrades unten)</p>
                             </div>
                         );
                     }
@@ -97,13 +65,15 @@ export function HallHub({ onSelectMachine }: HallHubProps) {
                                 Spielen
                             </button>
                             <button type="button" onClick={() => handleConvert(machine.id)} disabled={tickets.lte(0)}>
-                                In Credits umwandeln
+                                In Credits umwandeln ({conversionRate.toFixed(2)}/Ticket)
                             </button>
                             {isCompleted && <AttendantPanel machineId={machine.id} />}
                         </div>
                     );
                 })}
             </div>
+
+            <UpgradePanel />
         </div>
     );
 }

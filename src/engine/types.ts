@@ -36,10 +36,14 @@ export interface Milestone {
 
 export type UpgradeEffect =
     | { type: 'visibility'; value: number }
-    | { type: 'attendantSpeed'; value: number };
+    | { type: 'attendantSpeed'; value: number } // absoluter Trainings-Multiplikator ab dieser Stufe (hall.config.ts)
+    | { type: 'ticketConversionRate'; value: number } // absoluter Ticket->Credits-Kurs ab dieser Stufe (hall.config.ts)
+    | { type: 'unlockMachine'; machineId: string }; // schaltet einen Automaten frei (hall.config.ts)
 
 export interface UpgradeDef {
     id: string;
+    name: string;
+    description: string;
     cost: number; // in Credits
     effect: UpgradeEffect;
 }

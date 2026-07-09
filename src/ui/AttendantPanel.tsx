@@ -1,15 +1,17 @@
-import { gainKnowledgeFromTraining } from '../engine/AttendantEngine';
 import { economyStore, persist } from '../game/economy';
+import { getEffectiveTrainingGain } from '../data/hall.config';
 
 // Attendant-Panel pro Automat (Phase 5, game-spec.md 3.2). Nur sichtbar,
 // wenn der Automat bereits durchgespielt ist (Freischalt-Kriterium). Zeigt
 // Musterkenntnis + optionales, langsameres Credits-Training. Manuelles
 // Spielen bleibt der primaere (schnellere) Weg, siehe MachineScene.
 //
-// Hinweis (siehe STATUS.md): Die Tickets->Credits-Umrechnung ist erst ein
-// Hallen-Upgrade in Phase 7 -- bis dahin bleiben Credits bei 0 und der
-// Trainings-Button ist entsprechend meist deaktiviert. Das ist eine bekannte,
-// bewusste Luecke dieser Phase, kein Bug.
+// Der Musterkenntnis-Gewinn pro Training kommt seit Phase 7 aus
+// hall.config.ts::getEffectiveTrainingGain (Cross-Layer-Feedback: das
+// "Schulungsprogramm"-Hallen-Upgrade verbessert diese Rate fuer ALLE
+// Automaten, siehe hall.config.ts fuer die Begruendung). AttendantEngine.ts
+// selbst bleibt unveraendert -- die Multiplikation passiert hier, ausserhalb
+// der Engine, auf dem bereits exportierten TRAINING_KNOWLEDGE_GAIN.
 const ATTENDANT_TRAINING_COST = 10;
 
 interface AttendantPanelProps {
@@ -25,7 +27,8 @@ export function AttendantPanel({ machineId }: AttendantPanelProps) {
         if (!economyStore.spendCredits(ATTENDANT_TRAINING_COST)) {
             return;
         }
-        economyStore.setAttendantKnowledge(machineId, gainKnowledgeFromTraining(knowledge));
+        const gain = getEffectiveTrainingGain(economyStore.getState().hallUpgrades);
+        economyStore.setAttendantKnowledge(machineId, Math.min(1, knowledge + gain));
         persist();
     };
 

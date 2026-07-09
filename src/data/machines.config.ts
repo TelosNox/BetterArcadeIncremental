@@ -221,18 +221,11 @@ export const CHAMPIONS_LEDGER: MachineConfig = {
 
 export const MACHINES: readonly MachineConfig[] = [GREED_RUN, TRAP_TUNNELS, BEAT_LEDGER, CHAMPIONS_LEDGER];
 
-// Freischalt-Schwellen fuer die Halle (game-spec.md 3.3: "Automat 2 schaltet
-// frei nach Hallen-Upgrade-Schwelle X (basierend auf Credits aus Automat 1),
-// Automat 3/4 analog mit steigenden Schwellen"). PLATZHALTER: gehoert
-// eigentlich in ein eigenes hall.config.ts mit richtigem Upgrade-System
-// (Phase 7). Bis dahin reicht diese einfache Kostenliste, damit Phase 6
-// ("Freischalt-Logik in der Halle") ueberhaupt durchspielbar ist -- siehe
-// STATUS.md fuer die Begruendung dieser bewussten Vorgriff-Entscheidung.
-export const MACHINE_UNLOCK_COST: Readonly<Record<string, number>> = {
-    'trap-tunnels': 50,
-    'beat-ledger': 150,
-    'champions-ledger': 400,
-};
+// Freischalt-Schwellen fuer Automat 2-4 (game-spec.md 3.3) leben ab Phase 7
+// als echtes Hallen-Upgrade-System in src/data/hall.config.ts
+// (MACHINE_UNLOCK_UPGRADES) -- der fruehere PLATZHALTER hier (fest codierte
+// MACHINE_UNLOCK_COST-Konstante, Phase 6) wurde vollstaendig ersetzt, nicht
+// nur ergaenzt (PM-Vorgabe, siehe STATUS.md "PM-Entscheidungen").
 
 export function getMachineConfig(id: string): MachineConfig | undefined {
     return MACHINES.find((machine) => machine.id === id);

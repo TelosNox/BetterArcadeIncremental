@@ -4,8 +4,8 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 6 (Automaten 2–4: Trap Tunnels, Beat Ledger, Champion's Ledger)
-**Läuft/als Nächstes:** WARTET AUF PM-REVIEW (siehe Abschnitt "PM-Review: Phase 4–6" unten). Ab Phase 7 gilt die normale CLAUDE.md-Regel wieder (anhalten nach jeder Phase) — siehe "Workflow-Abweichung" unten.
+**Zuletzt abgeschlossen:** Phase 7 (Hallen-Upgrades & Cross-Layer-Feedback) — Code steht, Tests/Lint/Build/manuelle Verifikation grün, siehe "Phase 7" unten. **Wartet auf Nutzer-Rückmeldung** (normale CLAUDE.md-Regel gilt seit Phase 7 wieder: nach Phasenabschluss anhalten).
+**Läuft/als Nächstes:** Phase 8 (Politur / Juice) — NICHT begonnen, wartet auf Nutzer-Go. Nutzer will diesmal selbst testen (`npm run dev`, kompletter Kreislauf Ticket → Credit → Hallen-Upgrade).
 
 ## Verlauf
 
@@ -13,10 +13,10 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 - [x] Phase 1 — Engine-Kern ohne UI — abgenommen (EconomyStore, SaveSystem, events.ts; 40 Vitest-Tests grün, Lint sauber, Build ok)
 - [x] Phase 2 — PatternEngine + PushYourLuckEngine — abgenommen (39 neue Vitest-Tests grün, 79 Tests insgesamt, Lint + `tsc --noEmit` sauber)
 - [x] Phase 3 — Automat 1 vertikaler Vollschnitt ("Greed Run") — abgenommen (Blocker unten aufgelöst)
-- [x] Phase 4 — Reveal + Hallen-Grundgerüst — Code steht, Tests/Build grün, verifiziert; wartet auf PM-Review
-- [x] Phase 5 — Attendant-System — Code steht, Tests/Build grün, verifiziert; wartet auf PM-Review
-- [x] Phase 6 — Automaten 2–4 — Code steht, Tests/Build grün, verifiziert; wartet auf PM-Review
-- [ ] Phase 7 — Hallen-Upgrades & Cross-Layer-Feedback
+- [x] Phase 4 — Reveal + Hallen-Grundgerüst — abgenommen (PM-Review 2026-07-09)
+- [x] Phase 5 — Attendant-System — abgenommen (PM-Review 2026-07-09)
+- [x] Phase 6 — Automaten 2–4 — abgenommen (PM-Review 2026-07-09, siehe Bedingungen unten)
+- [x] Phase 7 — Hallen-Upgrades & Cross-Layer-Feedback — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Phase 7" unten)
 - [ ] Phase 8 — Politur / Juice
 - [ ] Phase 9 — Abschluss-Erlebnis
 
@@ -209,10 +209,113 @@ Meilenstein-Erreichen bei Trap Tunnels zeigt korrekt die normale
 Bank/Weitermachen-Entscheidung OHNE die grosse Reveal-Sequenz auszuloesen
 (die ist `entryPoint`-exklusiv, Baukasten 1.8).
 
+### PM-Entscheidungen (2026-07-09, nach unabhaengiger Verifikation: 128/128 Tests, Lint, tsc --noEmit, Build alle gruen in isolierter Kopie; Engine-Dateien seit Phase 3 nur additiv veraendert, keine Phaser/React-Importe in /src/engine)
+
+1. **Platzhalter-Wirtschaft (Freischalt-Kosten, Umrechnungskurs) genehmigt.**
+   Bedingung fuer Phase 7: muss dort VOLLSTAENDIG durch `hall.config.ts`
+   ersetzt werden, nicht nur ergaenzt -- sonst existieren zwei
+   Wirtschaftssysteme parallel.
+2. **Champion's Ledger "angekuendigte Spezialmoves" -- Auslassen bestaetigt.**
+   Kein Blocker. Backlog-Punkt fuer Phase 8 oder spaeter, keine
+   PatternEngine-Erweiterung jetzt noetig.
+3. **Neuer Befund (PM):** Alle vier Automaten nutzen aktuell identische,
+   generische Risiko-Tier-Labels ("safe"/"balanced"/"risky") statt
+   thematischer Bezeichnungen (z. B. Angriffs-/Block-/Konter-Tokens fuer
+   Champion's Ledger laut game-spec.md 4.5). Mechanisch korrekt
+   unterschiedlich (Zahlen, Sichtbarkeit), aber fuer den Spieler fuehlen
+   sich alle vier Automaten aktuell gleich an -- nur die Zahlen drumherum
+   unterscheiden sich. Kein Blocker fuer Phase 7 (Kernstruktur ist laut
+   game-spec.md 4.1 bewusst geteilt), aber VERBINDLICHER Punkt fuer
+   Phase 8 (Politur): thematische Beschriftung der Tokens/Tiers pro
+   Automat, sonst Redundanz-Risiko (Baukasten 1.4/4.2).
+
+### Phase 7 — Hallen-Upgrades & Cross-Layer-Feedback (2026-07-09)
+
+Neu: `src/data/hall.config.ts` (reine Daten + kleine Ableitungsfunktionen,
+analog zu `getEffectiveFailureChance` in `machines.config.ts` -- keine
+Aenderung an EconomyStore/PatternEngine/PushYourLuckEngine/AttendantEngine).
+`UpgradeDef`/`UpgradeEffect` (`src/engine/types.ts`) um `name`/`description`
+sowie die Effect-Varianten `ticketConversionRate` und `unlockMachine`
+erweitert (reine Typ-Erweiterung, keine Engine-Logik). Drei Upgrade-Kategorien,
+alle ueber die bereits seit Phase 1 vorhandene
+`economyStore.purchaseHallUpgrade(id, cost)` gekauft:
+
+1. **Ticket->Credits-Umrechnung** (`TICKET_CONVERSION_UPGRADES`, 3 Stufen,
+   0.5 Basis -> 0.75 -> 1.1 -> 1.5 Credits/Ticket). Ersetzt
+   `TICKET_CONVERSION_RATE = 1` aus `HallHub.tsx` VOLLSTAENDIG -- die Basis-
+   rate ohne jedes Upgrade ist bewusst niedriger als der alte Platzhalter
+   (0.5 statt 1), damit die Stufen eine echte, spuerbare Verbesserung sind
+   statt nur ein Reskin des alten Fixwerts.
+2. **Automaten-Freischaltung** (`MACHINE_UNLOCK_UPGRADES`, aus `MACHINES`
+   generiert). Ersetzt `MACHINE_UNLOCK_COST` aus `machines.config.ts`
+   VOLLSTAENDIG -- Kosten unveraendert uebernommen (50/150/400, bereits in
+   Phase 6 verifiziert), nur der Mechanismus wandert von einer fest
+   codierten Konstante in ein echtes Upgrade. Kein Symbol/keine Konstante
+   mit diesem Namen existiert mehr in `machines.config.ts`.
+3. **Attendant-Trainingsgeschwindigkeit** (`ATTENDANT_SPEED_UPGRADES`, 2
+   Stufen, Multiplikator 1x -> 1.4x -> 1.8x auf
+   `AttendantEngine.TRAINING_KNOWLEDGE_GAIN`, hallenweit fuer ALLE Automaten
+   gleichzeitig). Neu in Phase 7, kein Platzhalter-Vorgaenger.
+   Cross-Layer-Feedback (Baukasten 1.14): ein mit Credits aus
+   Automat 2-4 gekauftes Hallen-Upgrade verbessert rueckwirkend Automat 1s
+   Attendant-Training -- Automat 1 bleibt dadurch nach Freischaltung der
+   anderen drei relevant statt eine "stillgelegte Zahl" zu werden.
+   Obergrenze bewusst < `MANUAL_KNOWLEDGE_GAIN / TRAINING_KNOWLEDGE_GAIN`
+   (1.8x < 2x), per Test abgesichert (`hall.config.test.ts`), damit
+   manuelles Spielen laut game-spec.md 3.2 auch bei voll gekauftem Training
+   weiterhin schneller Musterkenntnis aufbaut als Credits-Training.
+
+**AttendantEngine.ts/EconomyStore.ts/PatternEngine.ts/PushYourLuckEngine.ts
+unveraendert** (Vorgabe fuer diese Phase). Die Verzahnung passiert an den
+Aufrufstellen: `AttendantPanel.tsx` multipliziert
+`AttendantEngine.TRAINING_KNOWLEDGE_GAIN` mit dem gekauften Multiplikator
+(`hall.config.ts::getEffectiveTrainingGain`), genau wie schon
+`machines.config.ts::getEffectiveFailureChance` PatternEngine/
+PushYourLuckEngine verzahnt, ohne sie aneinander zu koppeln.
+
+**UI:** Neues `src/ui/UpgradePanel.tsx` -- einzige Kaufoberflaeche fuer alle
+drei Kategorien, in `HallHub.tsx` unterhalb der Automaten-Karten eingebettet.
+`HallHub.tsx` selbst kauft nichts mehr direkt (der alte
+`handleUnlock`-Button pro gesperrter Karte ist entfernt) -- gesperrte Karten
+zeigen nur noch Status/Kosten und verweisen aufs UpgradePanel. Damit gibt es
+nur noch EINEN Kaufpfad pro Upgrade-Typ (PM-Vorgabe: "am Ende darf es nur
+noch einen Wirtschafts-Mechanismus geben, keine zwei parallelen").
+Gemeinsamer `useEconomyRevision`-Hook aus `HallHub.tsx` nach
+`src/ui/useEconomyRevision.ts` extrahiert (wird jetzt von `HallHub` UND
+`UpgradePanel` genutzt, Event-Liste nur an einer Stelle zu pflegen).
+
+**Bewusst NICHT Teil dieser Phase:** Pattern-Sichtbarkeits-Upgrades
+(`MachineConfig.upgrades`, `visibilityPerUpgrade`) bleiben weiterhin leere
+Arrays -- der PM-Auftrag fuer Phase 7 nannte explizit nur die drei Kategorien
+oben (Umrechnungskurs, Freischalt-Schwellen, Attendant-Trainingsgeschwindigkeit).
+`MachineScene.ts` hat dafuer keinen Platzhalter, der zu ersetzen waere (die
+feste `upgradeLevel = 0` betrifft Sichtbarkeit, nicht Umrechnung/Training) --
+deshalb bleibt `MachineScene.ts` in dieser Phase unveraendert. Falls
+Sichtbarkeits-Upgrades gewuenscht sind, waere das ein eigener,
+noch nicht spezifizierter Kaufmechanismus (pro Automat statt hallenweit) fuer
+eine spaetere Phase.
+
+**Verifiziert:** `npm test` (139/139 gruen, 11 neue Tests in
+`hall.config.test.ts`), `npm run lint` sauber, `npx tsc --noEmit` sauber,
+`npm run build` erfolgreich. Manuell per Playwright-Treiberskript gegen
+`npm run dev` (Save-Injection: 1000 Credits, 200 Tickets bei Greed Run,
+Greed Run durchgespielt): Wechselstube I gekauft (1000 -> 970 Credits, Kurs
+0.50 -> 0.75 im UI sichtbar) -> 200 Tickets zum NEUEN Kurs umgewandelt (970
+-> 1120 Credits, exakt +150 = 200*0.75) -> Trap Tunnels ueber das
+UpgradePanel freigeschaltet (Karte wechselt von "Gesperrt" zu spielbar) ->
+Schulungsprogramm I gekauft (Multiplikator-Anzeige 1.00x -> 1.40x) ->
+Training bei Greed Run ausgefuehrt (Musterkenntnis 50% -> 51%, +1.4% statt
+vorher +1%) -- kompletter Kreislauf Tickets -> Credits -> Hallen-Upgrades ->
+spuerbar verbesserte Automaten (Automat 1 UND neu freigeschalteter Automat 2)
+bestaetigt lauffaehig. Screenshots nicht Teil des Repos (nur Session-interne
+Verifikation, wie in Phase 4-6).
+
 ### Offene Punkte fuer spaetere Phasen (keine Blocker, nur Merkposten)
 
-- Phase 7 muss die PLATZHALTER-Wirtschaft (Umrechnungskurs, Freischalt-
-  Kosten) durch ein echtes `hall.config.ts`-Upgrade-System ersetzen.
+- Pattern-Sichtbarkeits-Upgrades (`MachineConfig.upgrades`) sind weiterhin
+  ueberall leere Arrays -- kein Kaufmechanismus fuer
+  `visibilityPerUpgrade` existiert bisher (bewusst ausserhalb des Phase-7-
+  Auftrags, siehe Abschnitt "Phase 7" oben).
 - Attendant-Automatisierung laeuft aktuell nur fuer den GERADE AKTIVEN
   Automaten (ein einzelnes MachineScene-Objekt fuer alle 4 Automaten,
   Architektur-Kurzregel). "Mehrere Automaten gleichzeitig im Hintergrund"

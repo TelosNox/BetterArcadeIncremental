@@ -100,3 +100,48 @@ body {
     color: rgba(255, 255, 255, 0.4);
     background-color: #222;
 }
+
+.upgrade-panel {
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.upgrade-panel__section {
+    margin-top: 16px;
+}
+
+.upgrade-panel__row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.upgrade-panel__row-info p {
+    margin: 4px 0 0;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.85em;
+}
+
+.upgrade-panel__row button {
+    flex-shrink: 0;
+    padding: 8px 16px;
+    background-color: #2c3e50;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.87);
+    cursor: pointer;
+}
+
+.upgrade-panel__row button:hover:not(:disabled) {
+    background-color: #34495e;
+}
+
+.upgrade-panel__row button:disabled {
+    cursor: not-allowed;
+    border-color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.4);
+    background-color: #222;
+}
