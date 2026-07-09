@@ -4,8 +4,252 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7e (Erkennbarkeit + Banking-Streichung) — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Ergebnis: Phase 7e umgesetzt" unten). Phase 7d (Attendant-Rate + Ticket-Ökonomie) bleibt unverändert als abgenommen gültig (Code stand bereits, wartete ebenfalls noch auf Verifikation — durch 7e nicht angetastet, siehe dortiger Ergebnis-Abschnitt).
-**Läuft/als Nächstes:** Beide Phasen (7d + 7e) stehen bereit zur gemeinsamen Nutzer-Verifikation. Phase 8 (Politur/Juice) ist der nächste geplante Schritt, bleibt aber zurückgestellt, bis 7d/7e abgenommen sind — insbesondere der im Prompt vorgemerkte "Hilfe"-Modus (optionale Wiedereinblendung der in 7e entfernten Live-Verhaltensanzeige auf den Aktions-Buttons) und generelle visuelle Politur der neuen Fünfeck-/Chip-Darstellung gehören dorthin, nicht in diese Phase. Phase 9 bleibt weiter zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7f (Greed Run Genre-Rework, siehe "Ergebnis"-Abschnitt unten) — Automat 1 ("Greed Run") komplett neu als 5×5-Sektorenfeld gebaut, ersetzt die bisherige Zyklus-Mechanik vollständig; Automaten 2–4 unverändert auf dem alten Modell/`MachineScene.ts`. `npm test`/`npm run lint`/`npx tsc --noEmit` grün, zusätzlich per Playwright-Smoke-Test gegen den echten Dev-Server verifiziert (siehe unten) — **noch nicht vom Nutzer im Playtest bestätigt**, das ist der nächste Schritt.
+**Läuft/als Nächstes:** Rückmeldung zum Greed-Run-Genre-Rework abwarten (spielt es sich wie eine eigene Genre-Idee statt austauschbarem Skin?), bevor entschieden wird, ob Trap Tunnels/Beat Ledger/Champion's Ledger im selben Stil überarbeitet werden. Bekannte, bewusst nicht in dieser Phase behobene Punkte: (1) Progression/Balance-Tuning bleibt weiterhin zurückgestellt (unverändert seit Phase 7d/7e); (2) Aktionsbudget-Upgrades wirken erst ab dem NÄCHSTEN Lauf, nicht rückwirkend auf den laufenden (Sichtweite/Präzision dagegen sofort, siehe unten) — bewusste, dokumentierte Vereinfachung, kein Bug. Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7f: Greed Run Genre-Rework (2026-07-10, mit Nutzer abgestimmt, Experiment)
+
+Hintergrund: Alle vier Automaten liefen bisher über dasselbe generische Zyklus-Modell (5 Aktionen kontern 5 Pattern-Zustände, siehe 4.1b/4.1c) — nur Thema/Optik unterschieden sich. Das fühlt sich laut Nutzer-Feedback wie eine austauschbare Skin an, nicht wie vier verschiedene Automaten-Genres. Statt alle vier gleichzeitig umzubauen, wird zuerst NUR Automat 1 ("Greed Run") grundlegend neu gebaut, um den Ansatz "von der Genre-Essenz her denken statt Skin über bestehende Mechanik" an einem Beispiel zu verproben, bevor Trap Tunnels/Beat Ledger/Champion's Ledger angefasst werden.
+
+Vollständige Spezifikation: `docs/game-spec.md` Abschnitt 4.2 (komplett neu geschrieben) — bitte von dort übernehmen, hier nur die Zusammenfassung der wichtigsten Punkte für Claude Code:
+
+1. **5×5-Sektorenfeld, Start im Mittelfeld (3,3), Bewegung in 4 Richtungen.** Kein Diagonal-, kein Stehenbleiben-Zug in dieser Version.
+2. **Fester, einmalig pro Run generierter Sektorinhalt** (weiterhin "festes Pattern pro Run"): 24 Nicht-Start-Sektoren, je einer von 4 Kategorien — Geist (negativ), Punkte (klein positiv, Mehrheitsfall), Leer (0), Bonus-Frucht (größer positiv, selten). Keine Powerpille in dieser Version.
+3. **Verbrauchsregel:** Betretener Sektor wird für den Rest des Runs zu Leer — gilt für alle vier Kategorien inklusive Geist (keine zweite Strafe an derselben Stelle).
+4. **Sicherheits-Constraint (weich, keine Garantie):** unter den bis zu 4 direkten Nachbarn des Startfelds höchstens 1 Geist.
+5. **Blind-Erwartungswert-Garantie automatisiert prüfen:** über die Kategorien-Häufigkeit gemittelter Payout eines komplett unvorbereiteten Zugs muss positiv bleiben (gleiches Prinzip wie bei den anderen Automaten, nur jetzt über Kategorien-Verteilung statt Markov-Verteilung).
+6. **Drei unabhängige, ticket-finanzierte Upgrade-Achsen:**
+   - Sichtweite 1–4 (Start 1): Manhattan-Distanz-Radius ab AKTUELLER Position, nach jedem Zug neu zentriert. Bei 4 sind ab der Mitte alle Ecken erreichbar (Distanz Mitte→Ecke = 4 auf einem 5×5-Feld).
+   - Präzision 0–3 (Start 1): wie viele der 4 Kategorien pro sichtbarem Sektor aufgelöst sind, Reihenfolge fokus-abhängig (siehe Punkt 7), bei 3 vollständig bekannt.
+   - Aktionsbudget (Start 4, Obergrenze offen/iterativ): Züge pro Run — bewusst UNABHÄNGIG von der Sichtweite (Abweichung von der 4.1c-Regel "Warteschlangenlänge = Sichtweite", hier bewusst, weil man weiter laufen kann als man sieht).
+7. **Fokus-Wahl Sicher/Gier, pro Run fix, kostenlos wechselbar zwischen Runs:**
+   - Sicher-Fokus: Präzision 1 deckt zuerst zuverlässig "Geist ja/nein" auf.
+   - Gier-Fokus: Präzision 1 deckt zuerst zuverlässig "Bonus ja/nein" auf.
+   - Präzision 2/3 lösen weitere Kategorien in fester, fokus-abhängiger Reihenfolge auf (Ermessen Claude Code für genaue Sekundär-Reihenfolge, Vorschlag in game-spec.md 4.2).
+8. **UI-Ablauf Fokus-Wahl:** Popup VOR Rundenstart mit den zwei Optionen, KEINE Checkbox im Popup. Permanenter HUD-Chip während des Laufs zeigt aktiven Fokus + Checkbox "für nächsten Lauf beibehalten" (Standard an). Checkbox aktiv → nächster Run startet direkt ohne Popup. Checkbox deaktiviert → Popup erscheint beim nächsten Rundenstart wieder.
+9. **Ausdrücklich zurückgestellt (Backlog, nicht vergessen):** Powerpille, bewegliche Geister, Zeitlimit in der Planungsphase.
+10. **Attendant-Automatisierung:** bestehende Markov-EV-Mathematik passt nicht mehr. Grob vereinfachte Platzhalter-Schätzung reicht für dieses Experiment (z. B. Erwartungswert aus Kategorien-Grundverteilung + Fokus/Präzision, ohne echte Pfadplanung) — bitte als bewusste Vereinfachung dokumentieren.
+11. **Architektur-Konsequenz:** Automat 1 bekommt eine eigene Phaser-Szene (nicht mehr die generische `MachineScene.ts`) — CLAUDE.md wurde entsprechend angepasst (Abschnitt "Workflow-Regeln"). `EconomyStore`/`SaveSystem`/Meilenstein-Anbindung bleiben geteilt, NICHT duplizieren. Automaten 2–4 bleiben unverändert auf der bestehenden `MachineScene.ts` mit dem Zyklus-Modell aus 4.1b/4.1c.
+12. **Speicherstand:** `CURRENT_SAVE_VERSION` erneut erhöhen, alte Spielstände beim Laden ablehnen statt migrieren (etabliertes Vorgehen).
+
+**Bewusst NICHT Teil dieser Phase:** Trap Tunnels/Beat Ledger/Champion's Ledger bleiben unangetastet auf dem alten Zyklus-Modell, bis dieses Experiment sich im Playtest bewährt hat. Progression/Balance-Tuning (siehe Nutzer-Feedback oben) bleibt ebenfalls bewusst zurückgestellt.
+
+### Ergebnis: Phase 7f umgesetzt (2026-07-10)
+
+Reihenfolge wie in CLAUDE.md gefordert: Engine-Logik zuerst mit Vitest
+abgesichert, danach erst an Phaser angebunden, mehrere Zwischen-Commits
+vorgesehen (siehe unten).
+
+**`src/engine/types.ts`:** `CURRENT_SAVE_VERSION` 3 → 4 (neues Pflichtfeld
+`gridFocusPreference`, siehe unten — wie immer bewusst KEINE Migration,
+alte Saves werden beim Laden abgelehnt). Grössere strukturelle Änderung:
+`MachineConfig` ist jetzt eine diskriminierte Union
+`CyclicMachineConfig | GridMachineConfig` (gemeinsame Felder in einem neuen
+`MachineIdentity`-Interface: `id`/`name`/`theme`/`entryPoint`/`milestones`/
+`ticketYieldFactor` — das sind genau die Felder, die maschinen-agnostischer
+Code wie `getReachedMilestones`, `hall.config.ts::MACHINE_UNLOCK_UPGRADES`
+oder `HallHub.tsx` braucht, und die bleiben dadurch OHNE Anpassung
+funktionsfähig). `CyclicMachineConfig` (`kind: 'cyclic'`) trägt `pattern`/
+`actions`/`depthUpgrades`/`precisionUpgrades` wie bisher — Automaten 2-4
+sind unverändert davon betroffen, nur die Typannotation kam dazu.
+`GridMachineConfig` (`kind: 'grid'`) ist neu: `grid: GridSectorConfig`
+(Feldgrösse, Kategorien-Anzahlen, Payout-Spannen, Sicherheits-Constraint)
+plus drei Upgrade-Leitern (`sightRangeUpgrades`/`gridPrecisionUpgrades`/
+`actionBudgetUpgrades`). Neue Typen `SectorCategory`
+(`'ghost'|'points'|'empty'|'bonus'`), `GridFocus` (`'safe'|'greedy'`),
+`GridFocusPreference` (`{focus, keepForNextRun}`). `MachineUpgradeEffect`
+um drei neue Varianten erweitert (`gridSightRange`/`gridPrecision`/
+`gridActionBudget`), additiv, ändert nichts an den bestehenden
+`previewDepth`/`previewPrecision`-Varianten. `EngineState` bekommt
+`gridFocusPreference: Record<string, GridFocusPreference>` (pro Automat-id,
+falls später ein zweiter Grid-Automat entsteht).
+
+**`src/engine/GridRunEngine.ts`+Test (neu, 35 Tests):** Komplett neues,
+framework-unabhängiges Modul (kennt weder Phaser noch React noch
+`/src/data`, Architektur-Kurzregel) — ersetzt `PatternEngine`/
+`PushYourLuckEngine` für Greed Run vollständig. Reine Funktionen (RNG per
+Parameter injizierbar, `Math.random` als Default, dieselbe Konvention wie
+`PatternEngine.sampleNext`): `generateGrid` (Fisher-Yates-Shuffle der
+Kategorien-Pool über die 24 Nicht-Start-Sektoren, danach
+`enforceStartNeighborSafety` — tauscht überzählige Geister-Nachbarn des
+Startfelds mit einer zufälligen Nicht-Geist-Zelle, bis das
+Sicherheits-Constraint `maxGhostAmongStartNeighbors` eingehalten ist),
+`getVisibleSectors` (Manhattan-Radius, neu zentriert um die aktuelle
+Position), `getFocusResolutionOrder`/`resolveSectorKnowledge`
+(fokus-abhängige Kategorien-Auflösungsreihenfolge: Sicher → Geist zuerst,
+Gier → Bonus zuerst, beide dann Leer; bei Präzision 3 ist die 4. Kategorie
+"Punkte" durch Ausschluss automatisch bekannt), `computeBlindExpectedValue`
+(Blind-EV-Garantie, über die Kategorien-HÄUFIGKEIT gemittelt statt über eine
+stationäre Markov-Verteilung), `drawCategoryPayout` (dieselbe
+Ziehungs-Mathematik wie `PushYourLuckEngine.drawPayout`, nur direkt auf
+Kategorien). Neue Klasse `GridRunEngine` (bewusst zustandsbehaftet, anders
+als das zustandslose `PatternEngine`/`PushYourLuckEngine`-Duo — dieser
+Automat hat genuin über mehrere Züge hinweg mutierenden Zustand: Nebel des
+Krieges + Verbrauchsregel) hält Feld/Position/Restbudget, `move()` löst
+einen Zug auf und wandelt den betretenen Sektor unabhängig von seiner
+ursprünglichen Kategorie zu `'empty'` (Verbrauchsregel, game-spec.md 4.2,
+gilt auch für Geister — keine zweite Strafe an derselben Stelle). Blind-EV
+der finalen Konfiguration (siehe unten) ≈ 2.5, per Test verifiziert; 200
+Seeds mit echtem `Math.random()` bestätigen das Sicherheits-Constraint
+(≤ 1 Geist unter den Start-Nachbarn) hält in jedem Fall.
+
+**`src/engine/AttendantEngine.ts`+Test (+8 Tests, bewusste Vereinfachung
+wie in game-spec.md 4.2 gefordert):** Neue Funktionen
+`getGridPerfectInfoExpectedValue`/`getGridAttendantExpectedValuePerMove`/
+`getGridAttendantMachinePointsRate` — dieselbe Interpolations-IDEE wie beim
+zyklischen Modell (linear zwischen Blind-EV und einer "Perfekt-Info"-EV,
+gewichtet mit dem Anteil genutzter Präzisions-Stufen), aber mit einer
+KATEGORIEN- statt ZUSTANDS-basierten Perfekt-Info-Definition: bei
+vollständiger Kenntnis weicht der Attendant jedem Geist-Sektor aus, die
+übrigen drei Kategorien werden proportional zu ihrem Anteil unter den
+Nicht-Geist-Sektoren neu gewichtet — explizit OHNE echte Pfadplanung UND
+OHNE Sichtweiten-Faktor (anders als beim zyklischen Modell gibt es keine
+feste Sequenz, an der ein Lookahead hängen könnte). Als bewusste,
+dokumentierte Vereinfachung im Code-Kommentar gekennzeichnet, wie vom Prompt
+gefordert.
+
+**`src/engine/EconomyStore.ts`/`SaveSystem.ts` (+3 bzw. +1 Test):** Neue
+Methoden `getGridFocusPreference`/`setGridFocusPreference` (reiner
+State-Zugriff, kein Event nötig — analog zu `getAttendantPool`/
+`setAttendantPool`, kein React-Konsument). `SaveSystem.ts`
+serialisiert/deserialisiert das neue Feld; alter Phase-7e-Save (saveVersion
+3, ohne `gridFocusPreference`) wird beim Laden korrekt abgelehnt (`null`,
+sauberer Reset), per Test verifiziert.
+
+**`src/data/machines.config.ts`+Test (Netto 90 Tests in
+`machines.config.test.ts`, gegenüber vorher aufgespalten):** `GREED_RUN`
+komplett neu als `GridMachineConfig` — `GREED_RUN_GRID`: 5×5, 24
+Nicht-Start-Sektoren als 5 Geist / 14 Punkte / 3 Leer / 2 Bonus, Payout-
+Spannen Geist `[-10,-6]`, Punkte `[3,6]`, Bonus `[15,22]`, Leer `[0,0]` —
+Blind-EV ≈ 2.5 (positiv mit spürbarem Abstand, siehe oben). Meilensteine
+UNVERÄNDERT (`20/50/100`, bleiben die Skalierungs-Basis für die anderen drei
+Automaten), `ticketYieldFactor` unverändert 1.0. Drei neue Upgrade-Leitern
+(bewusst OHNE Kreuz-Preis-Kopplung wie beim zyklischen Modell — nicht Teil
+der Spezifikation dieses Experiments): `sightRangeUpgrades` (1→2→3→4,
+Kosten 3/7/15 Automaten-Punkte), `gridPrecisionUpgrades` (1→2→3, Kosten
+4/10), `actionBudgetUpgrades` (4→6→9→13→18, Kosten 3/6/12/24). Neue
+Farbtabelle `SECTOR_COLORS`/`getSectorColor` (Okabe-Ito-Teilmenge, eigene
+Palette pro Kategorie statt der zyklus-positions-gebundenen
+`STATE_COLORS`) + `SECTOR_SYMBOLS` (Buchstaben G/P/B, CLAUDE.md-
+Barrierefreiheits-Grundsatz: Farbe nie alleiniges Merkmal).
+`getMachineAttendantRate` dispatcht jetzt nach `machine.kind` (grid nutzt
+die neuen `AttendantEngine`-Grid-Funktionen, cyclic bleibt exakt wie vorher)
+— einziger Ort im gesamten Code, an dem zwischen den beiden
+`MachineConfig`-Varianten unterschieden wird, alle Aufrufer
+(`economy.ts::tickAttendants`, `AttendantPanel.tsx`, `MachineScene.ts`)
+bleiben dadurch kind-agnostisch und unverändert. `TRAP_TUNNELS`/
+`BEAT_LEDGER`/`CHAMPIONS_LEDGER` bekommen nur `kind: 'cyclic'` dazu, sonst
+unverändert. `getPreviewDepth`/`getPreviewPrecision`/`getMachineUpgradeCost`/
+`getMachineUpgrade`/`computeInterleavedUpgradeCost`/
+`getUpgradeCostToMilestoneRatio` sind jetzt auf `CyclicMachineConfig`
+typisiert (greifen auf Felder zu, die nur dort existieren) —
+`machines.config.test.ts` entsprechend aufgeteilt: generische Tests
+(Meilensteine, `ticketYieldFactor`, Farben) laufen weiter über alle 4
+Automaten, zyklus-spezifische Tests laufen jetzt über eine neue
+`CYCLIC_MACHINES`-Konstante (nur Automat 2-4) statt über `MACHINES`, neuer
+Testblock "Greed Run (Grid-Automat)" prüft Kategorien-Summe, Blind-EV,
+Upgrade-Leitern-Längen/-Preise und die Grid-Ableitungsfunktionen.
+Netto-Testcount insgesamt (alle Dateien) **273** (vorher 220 nach Phase
+7e) — Zuwachs durch das komplett neue `GridRunEngine.test.ts` (35), neue
+Grid-Zweige in `AttendantEngine.test.ts`/`EconomyStore.test.ts`/
+`SaveSystem.test.ts` sowie den neuen Greed-Run-Block in
+`machines.config.test.ts`.
+
+**`src/game/sceneRouting.ts` (neu):** `getSceneKeyForMachine(machineId)` —
+EINE zentrale Zuordnung Automat-id → Phaser-Szenen-Key (`'GreedRun'` für
+Greed Run, sonst `'Machine'`), statt den Vergleich an vier Stellen zu
+duplizieren (`Boot.ts`, `TransitionScene.ts`, `MachineScene.ts`s
+`'request-machine'`-Listener, `GreedRunScene.ts`s eigener
+`'request-machine'`-Listener — jede Szene muss den Fall behandeln können,
+dass der Spieler aus der Halle heraus einen ANDEREN Automaten anwählt, auch
+wenn der andere in einer anderen Szenen-Familie lebt).
+
+**`src/game/scenes/milestonePips.ts` (neu, kleiner geteilter Helfer):**
+`createMilestonePips`/`updateMilestonePips` — dieselbe Meilenstein-Pip-Logik
+(ein Kreis pro Meilenstein, letzter als 45°-Raute, siehe Phase 7e) wird
+jetzt von `MachineScene.ts` UND `GreedRunScene.ts` genutzt, statt
+dupliziert zu werden. Reine Phaser-Zeichenlogik, die eigentliche
+Meilenstein-Auswertung (`getReachedMilestones`) bleibt unverändert in
+`machines.config.ts`.
+
+**`src/game/scenes/MachineScene.ts`:** `init()` prüft jetzt zusätzlich
+`config.kind !== 'cyclic'` und wirft (defensive Absicherung — dank
+`sceneRouting.ts` sollte Greed Run diese Szene nie erreichen). Feld-Typ
+`this.config` von `MachineConfig` auf `CyclicMachineConfig` verschärft.
+`request-machine`-Listener routet jetzt über `getSceneKeyForMachine` statt
+immer `'Machine'` zu starten. Lokale `createMilestonePips`/
+`updateMilestonePips`-Methoden entfernt, nutzt jetzt `milestonePips.ts`.
+Sonst inhaltlich unverändert — Automaten 2-4 spielen sich exakt wie vor
+Phase 7f.
+
+**`src/game/scenes/Boot.ts`/`TransitionScene.ts`:** Starten den
+Layer-0-Automaten jetzt über `getSceneKeyForMachine(entryPointId)` statt
+hart `'Machine'` zu verwenden.
+
+**`src/game/scenes/GreedRunScene.ts` (neu, größtes neues Stück dieser
+Phase):** Eigene Szene (Key `'GreedRun'`), ersetzt `MachineScene.ts` für
+Automat 1 vollständig — Buchhaltung (`economyStore`/`persist`/
+`getReachedMilestones`/Meilenstein-Pips) bleibt exakt dieselbe geteilte
+Infrastruktur, nur Zug-Auflösung/Vorschau/Darstellung sind neu, wie von
+CLAUDE.md gefordert.
+- *Rundenstruktur:* ein "Run" (5×5-Feld, feste Zug-Sequenz-Analogie zum
+  alten Modell: EINMAL bei Run-Start generiert) läuft über MEHRERE
+  Planungsrunden hinweg (1 bis Restbudget-viele Züge pro Runde), bis das
+  gesamte Aktionsbudget verbraucht ist — anders als beim alten Modell, wo
+  jede Planungsrunde für sich stand. Danach startet automatisch ein neuer
+  Run (Checkbox "für nächsten Lauf beibehalten" aktiv) oder das Fokus-Popup
+  erscheint erneut.
+- *Fokus-Wahl (game-spec.md 4.2 "UI-Ablauf"):* Popup mit den zwei Optionen
+  VOR Rundenstart, keine Checkbox im Popup selbst. Permanenter HUD-Chip
+  während des Laufs (Fokus-Name + Farbe) plus eigener Checkbox-Button
+  "Für nächsten Lauf beibehalten" (Standard aktiv) — Toggle persistiert
+  sofort in `EconomyStore.gridFocusPreference` + `persist()`.
+- *Feld-Darstellung (CLAUDE.md-Barrierefreiheits-Grundsatz, IMMER Farbe +
+  zweites Merkmal):* außerhalb der Sichtweite → grauer "?"-Sektor;
+  innerhalb der Sichtweite, aber Präzision reicht nicht → neutraler Sektor
+  mit "?" PLUS kleinen farbigen Punkten für jede bereits ausgeschlossene
+  Kategorie (Farbe der jeweiligen Kategorie); vollständig bekannt → voll
+  eingefärbter Sektor mit Kategorie-Buchstabe (G/P/B, Leer ohne Buchstabe).
+  Aktuelle Position zusätzlich mit weißer Rahmen-Markierung (Form, nicht nur
+  Farbe) hervorgehoben, bereits besuchte Sektoren mit einer dezenten
+  "besucht"-Markierung (Verbrauchsregel macht ihren ursprünglichen Inhalt im
+  Engine-State ohnehin zu `'empty'`). Statische Legende (einmalig erzeugt)
+  erklärt alle Symbole inkl. Payout-Spannen pro Kategorie.
+- *Bewegungsplanung:* 4-Wege-D-Pad, Buttons zeigen über Farbe an, ob der
+  Zug aktuell gültig ist (Restbudget UND Feldrand geprüft via
+  `applyDirection` auf die PROJIZIERTE Position nach bereits geplanten
+  Zügen) — Klick auf einen ungültigen Zug tut nichts (Guard in der
+  Klick-Callback, dieselbe Konvention wie `MachineScene.queueAction`).
+- *Upgrade-Achsen:* Sichtweite/Präzision werden LIVE bei jedem Render aus
+  `EconomyStore.getMachineUpgrades` gelesen — ein mitten im Run gekauftes
+  Upgrade wirkt SOFORT (wie beim zyklischen Modell). Aktionsbudget ist
+  dagegen bei `GridRunEngine`-Konstruktion fest gebacken (ein Run braucht
+  ein bestimmtes Budget für ein wohldefiniertes Ende) — ein mitten im Run
+  gekauftes Budget-Upgrade wirkt daher erst ab dem NÄCHSTEN Run. Bewusste,
+  strukturell bedingte Design-Entscheidung, im Code dokumentiert.
+- *Attendant-Status:* zeigt die Rate wie bei `MachineScene.ts`, Text
+  ergänzt um "(vereinfachte Schätzung ohne Pfadplanung)" als Hinweis auf die
+  bewusste Vereinfachung.
+
+**`src/game/main.ts`:** `GreedRunScene` zur `scene`-Liste hinzugefügt.
+
+**Verifiziert:** `npm test` (**273/273 grün**), `npm run lint` sauber,
+`npx tsc --noEmit` sauber, `npm run build-nolog` erfolgreich. Zusätzlich
+per Playwright-Skript gegen `npm run dev-nolog` (Skript + temporäre
+Playwright-Installation nach dem Lauf wieder entfernt, nicht Teil des
+Repos/package.json) mit Screenshots visuell geprüft: frischer Start (leerer
+`localStorage`) zeigt sofort das Fokus-Popup; Klick auf "Sicher" startet
+den Run und zeigt das 5×5-Feld korrekt (Sichtweite 1 um die Mitte, ein
+Nachbar korrekt als Geist aufgedeckt gemäß Sicher-Fokus-Reihenfolge, die
+übrigen als "?" mit ausgeschlossenem-Geist-Punkt); zwei "Rechts"-Züge
+geplant, "Los!" ausgeführt → Feedback-Text zeigt Schritt-für-Schritt-
+Ergebnis korrekt (u. a. ein Verlust-Fall bei Geist-Treffer, Punktestand
+korrekt bei 0 gekappt), Aktionsbudget-Zähler sinkt korrekt, Plan wird nach
+Ausführung geleert, besuchte Felder korrekt markiert; Klick auf ein
+Upgrade ohne ausreichende Automaten-Punkte kauft korrekt NICHT (kein
+Crash). Keine Konsolenfehler über den gesamten Testlauf. **Noch nicht vom
+Nutzer selbst gespielt/bestätigt** — das ist der nächste Schritt, kein
+automatisierter Ersatz dafür.
 
 ## NEUE PHASE 7e: Erkennbarkeit + Banking-Streichung (2026-07-09, mit Nutzer abgestimmt)
 
