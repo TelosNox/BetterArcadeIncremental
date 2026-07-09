@@ -1,4 +1,5 @@
-import type { AttendantPoolState, CyclicActionDef, PatternConfig } from './types';
+import type { AttendantPoolState, CyclicActionDef, GridSectorConfig, PatternConfig, SectorCategory } from './types';
+import { computeBlindExpectedValue } from './GridRunEngine';
 
 // Attendant-Automatisierung (game-spec.md 3.2, Baukasten 1.3/1.9). Framework-
 // unabhaengig, kennt weder Phaser noch React (Architektur-Kurzregel). Nutzt
@@ -194,6 +195,67 @@ export function getAttendantMachinePointsRate(
     const evPerAction = getAttendantExpectedValuePerAction(actions, stationary, lookahead, precision, maxPrecision);
     const efficiency = getAttendantEfficiency(knowledge);
     return Math.max(0, evPerAction) * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
+}
+
+// --- Grid-Automaten-Ertragsrate (Phase 7f, game-spec.md 4.2, STATUS.md ---
+// Phase 7f Punkt 10) -----------------------------------------------------
+//
+// Das Rate-Modell oben (computeStationaryDistribution/
+// getAttendantExpectedValuePerAction/getAttendantMachinePointsRate) setzt
+// ein zyklisches Markov-Pattern voraus, das der neue 5x5-Sektorenfeld-
+// Automat ("Greed Run") nicht mehr hat -- er nutzt PatternEngine/
+// CyclicActionDef nicht mehr (siehe GridRunEngine.ts). Game-spec.md 4.2
+// erlaubt dafuer ausdruecklich eine GROB VEREINFACHTE Platzhalter-Schaetzung
+// OHNE echte Pfadplanung und OHNE Beruecksichtigung der Sichtweite -- bewusst
+// dieselbe Interpolations-IDEE wie oben (linear zwischen Blind-EV und
+// Perfekt-Info-EV, gewichtet mit dem Anteil genutzter Praezisions-Stufen),
+// nur mit einer KATEGORIEN- statt ZUSTANDS-basierten Perfekt-Info-Definition:
+// bei vollstaendiger Kenntnis weicht der Attendant jedem bekannten
+// Geist-Sektor aus, die uebrigen drei Kategorien werden proportional zu
+// ihrem urspruenglichen Anteil unter den NICHT-Geist-Sektoren neu gewichtet
+// (keine echte "geht dorthin, wo der naechste Bonus liegt"-Planung).
+
+const NON_GHOST_CATEGORIES: readonly Exclude<SectorCategory, 'ghost'>[] = ['points', 'empty', 'bonus'];
+
+export function getGridPerfectInfoExpectedValue(config: GridSectorConfig): number {
+    const totalNonStart = config.gridSize * config.gridSize - 1;
+    const ghostWeight = (config.categoryCounts.ghost ?? 0) / totalNonStart;
+    const nonGhostWeight = 1 - ghostWeight;
+    if (nonGhostWeight <= 0) {
+        return 0;
+    }
+    return NON_GHOST_CATEGORIES.reduce((sum, category) => {
+        const weight = (config.categoryCounts[category] ?? 0) / totalNonStart / nonGhostWeight;
+        return sum + weight * mean(config.payoutRanges[category]);
+    }, 0);
+}
+
+export function getGridAttendantExpectedValuePerMove(
+    config: GridSectorConfig,
+    attendantPrecision: number,
+    maxPrecision: number,
+): number {
+    const blindEv = computeBlindExpectedValue(config);
+    const perfectInfoEv = getGridPerfectInfoExpectedValue(config);
+    const precisionFraction = maxPrecision > 0 ? clamp01(attendantPrecision / maxPrecision) : 0;
+    return blindEv + precisionFraction * (perfectInfoEv - blindEv);
+}
+
+// Vollstaendige Ertragsrate des Grid-Automaten -- Komposition wie
+// getAttendantMachinePointsRate oben (Praezision skaliert mit Musterkenntnis
+// via getAttendantPrecision, dann Effizienz + Aktionen/Sekunde), aber ohne
+// Lookahead-Faktor (keine feste Sequenz, an der eine Sichtweite haengen
+// koennte -- siehe Datei-Kommentar).
+export function getGridAttendantMachinePointsRate(
+    config: GridSectorConfig,
+    knowledge: number,
+    previewPrecision: number,
+    maxPrecision: number,
+): number {
+    const precision = getAttendantPrecision(previewPrecision, knowledge);
+    const evPerMove = getGridAttendantExpectedValuePerMove(config, precision, maxPrecision);
+    const efficiency = getAttendantEfficiency(knowledge);
+    return Math.max(0, evPerMove) * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
 }
 
 // --- Pool-Dynamik (Vordergrund-Optik) + Offline-Anwendung -----------------

@@ -1,5 +1,5 @@
 import Decimal, { type DecimalSource } from 'break_infinity.js';
-import { CURRENT_SAVE_VERSION, type AttendantPoolState, type EngineState } from './types';
+import { CURRENT_SAVE_VERSION, type AttendantPoolState, type EngineState, type GridFocusPreference } from './types';
 import { EventEmitter, type EngineEvents } from './events';
 
 // Tickets (hallenweit), Automaten-Punkte (pro Automat), Hallen-Upgrades.
@@ -40,6 +40,7 @@ export class EconomyStore {
             machineUpgrades: {},
             attendantPools: {},
             lastAttendantUpdate: Date.now(),
+            gridFocusPreference: {},
         };
     }
 
@@ -254,6 +255,19 @@ export class EconomyStore {
 
     setLastAttendantUpdate(timestampMs: number): void {
         this.state.lastAttendantUpdate = timestampMs;
+    }
+
+    // --- Fokus-Wahl Grid-Automat (Phase 7f, game-spec.md 4.2) ---------------
+    // Reiner State-Zugriff, kein Event noetig (analog zu getAttendantPool/
+    // setAttendantPool oben) -- ausschliesslich von der jeweiligen Grid-
+    // Automaten-Szene selbst gelesen/geschrieben, kein React-UI-Konsument.
+
+    getGridFocusPreference(machineId: string): GridFocusPreference | undefined {
+        return this.state.gridFocusPreference[machineId];
+    }
+
+    setGridFocusPreference(machineId: string, preference: GridFocusPreference): void {
+        this.state.gridFocusPreference[machineId] = preference;
     }
 
     // Ersetzt den kompletten State, z. B. nach SaveSystem.load().

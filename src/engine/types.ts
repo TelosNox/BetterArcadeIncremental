@@ -14,22 +14,25 @@ import type Decimal from 'break_infinity.js';
 // inkompatibel abgelehnt (SaveSystem.load() faengt das ab und startet sauber
 // neu, siehe SaveSystem.ts). Phase 7e (Erkennbarkeit + Banking-Streichung)
 // erhoeht die Version erneut auf 3 (neues Pflichtfeld `machinePeakScore`,
-// siehe EngineState unten) -- aus demselben Grund keine Migration.
-export const CURRENT_SAVE_VERSION = 3;
+// siehe EngineState unten). Phase 7f (Greed Run Genre-Rework, siehe
+// STATUS.md/game-spec.md 4.2) erhoeht sie erneut auf 4 (neues Pflichtfeld
+// `gridFocusPreference`) -- aus demselben Grund keine Migration.
+export const CURRENT_SAVE_VERSION = 4;
 
-export interface MachineConfig {
+// Gemeinsame Felder, die JEDER Automat hat, unabhaengig von seiner
+// Kernmechanik (Phase 7f, game-spec.md 4.2: Greed Run bekommt eine
+// strukturell andere Mechanik als das gemeinsame zyklische Modell aus
+// 4.1/4.1b/4.1c, das Automaten 2-4 weiterhin nutzen). Alles, was die
+// Hallen-Oekonomie/Meilenstein-Auswertung MACHINE-AGNOSTISCH braucht
+// (getReachedMilestones, hall.config.ts::MACHINE_UNLOCK_UPGRADES, HallHub.tsx),
+// lebt hier, damit es fuer BEIDE MachineConfig-Varianten unveraendert
+// funktioniert, ohne auf `kind` unterscheiden zu muessen.
+export interface MachineIdentity {
     id: string;
     name: string;
     theme: string;
     entryPoint: boolean; // true nur beim Layer-0-Automaten
-    pattern: PatternConfig;
-    actions: MachineAction[];
     milestones: Milestone[];
-    // Automaten-interne, mit Automaten-Punkten bezahlte Zwei-Achsen-Vorschau
-    // (Phase 7c): zwei UNABHAENGIGE Leitern statt einer einzelnen
-    // "visibility"-Leiter aus Phase 7b (siehe MachineUpgradeDef unten).
-    depthUpgrades: MachineUpgradeDef[];
-    precisionUpgrades: MachineUpgradeDef[];
     // Feste, NICHT kaufbare Normalisierungs-Konstante (Phase 7d, game-spec.md
     // 3.1): gleicht unterschiedliche Rohzahlen-Skalen der vier Automaten
     // (Champion's Ledger deutlich hoeher als Greed Run) fuer einen fairen
@@ -37,6 +40,60 @@ export interface MachineConfig {
     // Spieler-Hebel, reiner Balance-Wert. Siehe machines.config.ts fuer die
     // konkrete Kalibrierung.
     ticketYieldFactor: number;
+}
+
+// Automat 2-4 (game-spec.md 4.1/4.1b/4.1c): rein zyklisches Konter-Modell,
+// unveraendert seit Phase 7c/7e.
+export interface CyclicMachineConfig extends MachineIdentity {
+    kind: 'cyclic';
+    pattern: PatternConfig;
+    actions: MachineAction[];
+    // Automaten-interne, mit Automaten-Punkten bezahlte Zwei-Achsen-Vorschau
+    // (Phase 7c): zwei UNABHAENGIGE Leitern statt einer einzelnen
+    // "visibility"-Leiter aus Phase 7b (siehe MachineUpgradeDef unten).
+    depthUpgrades: MachineUpgradeDef[];
+    precisionUpgrades: MachineUpgradeDef[];
+}
+
+// Automat 1 "Greed Run" (Phase 7f, game-spec.md 4.2): 5x5-Sektorenfeld statt
+// zyklisches Pattern -- nutzt PatternEngine/CyclicActionDef nicht mehr. Siehe
+// GridRunEngine.ts fuer die reine Spiellogik.
+export interface GridMachineConfig extends MachineIdentity {
+    kind: 'grid';
+    grid: GridSectorConfig;
+    // Drei UNABHAENGIGE, ticket... genauer: automaten-punkte-finanzierte
+    // Upgrade-Leitern (game-spec.md 4.2 Punkt "Drei unabhaengige
+    // Upgrade-Achsen") -- bewusst KEINE Kreuz-Preis-Kopplung wie beim
+    // zyklischen Modell (nicht Teil der Spezifikation fuer dieses Experiment).
+    sightRangeUpgrades: MachineUpgradeDef[];
+    gridPrecisionUpgrades: MachineUpgradeDef[];
+    actionBudgetUpgrades: MachineUpgradeDef[];
+}
+
+export type MachineConfig = CyclicMachineConfig | GridMachineConfig;
+
+// --- Greed Run / Grid-Automat (Phase 7f, game-spec.md 4.2) ----------------
+
+export type SectorCategory = 'ghost' | 'points' | 'empty' | 'bonus';
+
+export type GridFocus = 'safe' | 'greedy';
+
+export interface GridSectorConfig {
+    gridSize: number; // 5
+    // Anzahl Sektoren je Kategorie unter den (gridSize*gridSize - 1)
+    // Nicht-Start-Sektoren -- muss sich exakt darauf aufsummieren
+    // (GridRunEngine.generateGrid wirft sonst).
+    categoryCounts: Record<SectorCategory, number>;
+    payoutRanges: Record<SectorCategory, [min: number, max: number]>;
+    // Weiche->tatsaechlich lokal harte Sicherheits-Korrektur NUR fuer die
+    // direkten Nachbarn des Startfelds (game-spec.md 4.2 "Sicherheits-
+    // Constraint") -- keine Garantie fuer den Rest des Feldes.
+    maxGhostAmongStartNeighbors: number;
+}
+
+export interface GridFocusPreference {
+    focus: GridFocus;
+    keepForNextRun: boolean;
 }
 
 export interface PatternConfig {
@@ -134,9 +191,19 @@ export interface UpgradeDef {
 // (nicht additiv), siehe machines.config.ts::getPreviewDepth/getPreviewPrecision.
 // `cost` ist der BASISPREIS vor dem Kreuz-Preis-Aufschlag (siehe
 // machines.config.ts::getMachineUpgradeCost).
+// Phase 7f (game-spec.md 4.2): drei weitere Effekt-Varianten fuer die
+// Grid-Automaten-Upgrade-Achsen, strukturell analog zu previewDepth/
+// previewPrecision (absoluter Zielwert ab dieser Stufe), aber bewusst
+// eigene Typen statt Wiederverwendung -- previewDepth/previewPrecision
+// gelten fuer das zyklische Zwei-Achsen-Modell (Automat 2-4), waehrend
+// gridSightRange/gridPrecision/gridActionBudget einen eigenen, unabhaengigen
+// Zahlenbereich haben (siehe machines.config.ts).
 export type MachineUpgradeEffect =
     | { type: 'previewDepth'; value: number }
-    | { type: 'previewPrecision'; value: number };
+    | { type: 'previewPrecision'; value: number }
+    | { type: 'gridSightRange'; value: number }
+    | { type: 'gridPrecision'; value: number }
+    | { type: 'gridActionBudget'; value: number };
 
 export interface MachineUpgradeDef {
     id: string;
@@ -192,4 +259,10 @@ export interface EngineState {
     // zuletzt angewendete Echtzeit-Differenz, siehe AttendantEngine.ts.
     attendantPools: Record<string, AttendantPoolState>;
     lastAttendantUpdate: number;
+    // Fokus-Wahl Sicher/Gier des Grid-Automaten (Phase 7f, game-spec.md 4.2
+    // "UI-Ablauf"), pro Automat-id gespeichert (Record statt Einzelfeld, damit
+    // ein spaeterer zweiter Grid-Automat dasselbe Feld mitnutzen kann, ohne
+    // erneut die Save-Version zu erhoehen). `keepForNextRun` steuert, ob der
+    // naechste Run das Fokus-Popup ueberspringt und `focus` direkt uebernimmt.
+    gridFocusPreference: Record<string, GridFocusPreference>;
 }

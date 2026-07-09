@@ -16,9 +16,12 @@ import {
     getAttendantLookahead,
     getAttendantMachinePointsRate,
     getAttendantPrecision,
+    getGridAttendantExpectedValuePerMove,
+    getGridAttendantMachinePointsRate,
+    getGridPerfectInfoExpectedValue,
     type AttendantRate,
 } from './AttendantEngine';
-import type { CyclicActionDef } from './types';
+import type { CyclicActionDef, GridSectorConfig } from './types';
 
 // Handgebaute Fixture statt Import aus src/data/machines.config.ts -- die
 // Engine-Tests bleiben damit unabhaengig von der konkreten Automaten-
@@ -297,6 +300,72 @@ describe('AttendantEngine', () => {
 
         it('manuelles Spielen steigert die Musterkenntnis schneller als Tickets-Training (game-spec.md 3.2)', () => {
             expect(MANUAL_KNOWLEDGE_GAIN).toBeGreaterThan(TRAINING_KNOWLEDGE_GAIN);
+        });
+    });
+
+    // Eigenstaendige Grid-Fixture (Phase 7f, game-spec.md 4.2) -- dieselbe
+    // Unabhaengigkeit von machines.config.ts wie oben. 24 Nicht-Start-Sektoren:
+    // 5 Geist, 14 Punkte, 3 Leer, 2 Bonus.
+    const gridConfig: GridSectorConfig = {
+        gridSize: 5,
+        categoryCounts: { ghost: 5, points: 14, empty: 3, bonus: 2 },
+        payoutRanges: { ghost: [-10, -6], points: [3, 6], empty: [0, 0], bonus: [15, 22] },
+        maxGhostAmongStartNeighbors: 1,
+    };
+
+    describe('getGridPerfectInfoExpectedValue (Phase 7f, dokumentierte Vereinfachung)', () => {
+        it('ist positiv und liegt ueber der Blind-EV (Geister werden bei perfekter Kenntnis vollstaendig vermieden)', () => {
+            const perfect = getGridPerfectInfoExpectedValue(gridConfig);
+            expect(perfect).toBeGreaterThan(0);
+        });
+
+        it('ist 0, wenn ausschliesslich Geister konfiguriert sind (kein Nicht-Geist-Sektor uebrig)', () => {
+            const onlyGhosts: GridSectorConfig = {
+                ...gridConfig,
+                categoryCounts: { ghost: 24, points: 0, empty: 0, bonus: 0 },
+            };
+            expect(getGridPerfectInfoExpectedValue(onlyGhosts)).toBe(0);
+        });
+    });
+
+    describe('getGridAttendantExpectedValuePerMove', () => {
+        it('entspricht bei Praezision 0 der Blind-EV', () => {
+            const ev = getGridAttendantExpectedValuePerMove(gridConfig, 0, 3);
+            // Blind-EV der Fixture (siehe GridRunEngine.test.ts): 5/24*(-8) + 14/24*4.5 + 3/24*0 + 2/24*18.5 = 2.5
+            expect(ev).toBeCloseTo(2.5, 1);
+        });
+
+        it('entspricht bei maximaler Praezision der Perfekt-Info-EV', () => {
+            const ev = getGridAttendantExpectedValuePerMove(gridConfig, 3, 3);
+            expect(ev).toBeCloseTo(getGridPerfectInfoExpectedValue(gridConfig));
+        });
+
+        it('ist streng monoton steigend in der Praezision (mehr Info ist nie schlechter)', () => {
+            const evs = [0, 1, 2, 3].map((p) => getGridAttendantExpectedValuePerMove(gridConfig, p, 3));
+            for (let i = 1; i < evs.length; i += 1) {
+                expect(evs[i]).toBeGreaterThanOrEqual(evs[i - 1]);
+            }
+            expect(evs[3]).toBeGreaterThan(evs[0]);
+        });
+    });
+
+    describe('getGridAttendantMachinePointsRate', () => {
+        it('ist 0 bei Musterkenntnis 0 (Effizienz 0)', () => {
+            expect(getGridAttendantMachinePointsRate(gridConfig, 0, 3, 3)).toBe(0);
+        });
+
+        it('steigt mit der Musterkenntnis (mehr Effizienz UND mehr nutzbare Praezision)', () => {
+            const low = getGridAttendantMachinePointsRate(gridConfig, 0.2, 3, 3);
+            const high = getGridAttendantMachinePointsRate(gridConfig, 0.9, 3, 3);
+            expect(high).toBeGreaterThan(low);
+        });
+
+        it('ist niemals negativ, selbst bei entarteter (rein negativer) Konfiguration', () => {
+            const allGhost: GridSectorConfig = {
+                ...gridConfig,
+                categoryCounts: { ghost: 24, points: 0, empty: 0, bonus: 0 },
+            };
+            expect(getGridAttendantMachinePointsRate(allGhost, 1, 3, 3)).toBeGreaterThanOrEqual(0);
         });
     });
 });

@@ -52,6 +52,7 @@ function stateWithSomeData(): EngineState {
         machineUpgrades: { 'greed-run': ['visibility-1'] },
         attendantPools: { 'greed-run': { machinePoints: 1.5, hallTickets: 0.5, msSincePayout: 1200 } },
         lastAttendantUpdate: 1_700_000_000_000,
+        gridFocusPreference: { 'greed-run': { focus: 'safe', keepForNextRun: true } },
     };
 }
 
@@ -72,6 +73,7 @@ describe('serializeState / deserializeState', () => {
         expect(restored.machineUpgrades).toEqual(original.machineUpgrades);
         expect(restored.attendantPools).toEqual(original.attendantPools);
         expect(restored.lastAttendantUpdate).toBe(original.lastAttendantUpdate);
+        expect(restored.gridFocusPreference).toEqual(original.gridFocusPreference);
     });
 
     it('erhaelt Zahlen jenseits von Number.MAX_SAFE_INTEGER ueber den Round-Trip', () => {
@@ -163,6 +165,27 @@ describe('SaveSystem', () => {
             lastAttendantUpdate: Date.now(),
         };
         storage.setItem('arcade-incremental-save', JSON.stringify(phase7dState));
+        const saveSystem = new SaveSystem(storage);
+
+        expect(saveSystem.load()).toBeNull();
+    });
+
+    it('load() gibt bei einem Phase-7e-Speicherstand (saveVersion 3, ohne gridFocusPreference) null zurueck', () => {
+        const storage = new MemoryStorage();
+        const phase7eState = {
+            saveVersion: 3,
+            tickets: '100',
+            machinePoints: { 'greed-run': '5' },
+            machinePeakScore: { 'greed-run': '5' },
+            unlockedMachines: [],
+            attendantKnowledge: {},
+            hallUpgrades: [],
+            completedMachines: [],
+            machineUpgrades: {},
+            attendantPools: {},
+            lastAttendantUpdate: Date.now(),
+        };
+        storage.setItem('arcade-incremental-save', JSON.stringify(phase7eState));
         const saveSystem = new SaveSystem(storage);
 
         expect(saveSystem.load()).toBeNull();

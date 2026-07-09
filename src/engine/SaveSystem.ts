@@ -1,5 +1,5 @@
 import Decimal from 'break_infinity.js';
-import { CURRENT_SAVE_VERSION, type AttendantPoolState, type EngineState } from './types';
+import { CURRENT_SAVE_VERSION, type AttendantPoolState, type EngineState, type GridFocusPreference } from './types';
 
 // localStorage + JSON Export/Import. Kennt weder Phaser noch React.
 // Decimal-Werte (break_infinity.js) werden als String serialisiert, da sie
@@ -17,6 +17,7 @@ interface SerializedEngineState {
     machineUpgrades: Record<string, string[]>;
     attendantPools: Record<string, AttendantPoolState>;
     lastAttendantUpdate: number;
+    gridFocusPreference: Record<string, GridFocusPreference>;
 }
 
 const DEFAULT_SAVE_KEY = 'arcade-incremental-save';
@@ -42,6 +43,9 @@ export function serializeState(state: EngineState): string {
             Object.entries(state.attendantPools).map(([machineId, pool]) => [machineId, { ...pool }]),
         ),
         lastAttendantUpdate: state.lastAttendantUpdate,
+        gridFocusPreference: Object.fromEntries(
+            Object.entries(state.gridFocusPreference).map(([machineId, preference]) => [machineId, { ...preference }]),
+        ),
     };
     return JSON.stringify(serialized);
 }
@@ -91,6 +95,9 @@ export function deserializeState(json: string): EngineState {
             Object.entries(parsed.attendantPools ?? {}).map(([machineId, pool]) => [machineId, { ...pool }]),
         ),
         lastAttendantUpdate: parsed.lastAttendantUpdate ?? Date.now(),
+        gridFocusPreference: Object.fromEntries(
+            Object.entries(parsed.gridFocusPreference ?? {}).map(([machineId, preference]) => [machineId, { ...preference }]),
+        ),
     };
 }
 

@@ -382,6 +382,31 @@ describe('EconomyStore', () => {
         });
     });
 
+    describe('Fokus-Wahl Grid-Automat (Phase 7f, game-spec.md 4.2)', () => {
+        it('liefert undefined, solange kein Fokus fuer diesen Automaten gewaehlt wurde', () => {
+            const store = new EconomyStore();
+
+            expect(store.getGridFocusPreference('greed-run')).toBeUndefined();
+        });
+
+        it('speichert und liefert die gewaehlte Fokus-Praeferenz', () => {
+            const store = new EconomyStore();
+
+            store.setGridFocusPreference('greed-run', { focus: 'safe', keepForNextRun: true });
+
+            expect(store.getGridFocusPreference('greed-run')).toEqual({ focus: 'safe', keepForNextRun: true });
+        });
+
+        it('ueberschreibt eine vorherige Praeferenz desselben Automaten', () => {
+            const store = new EconomyStore();
+
+            store.setGridFocusPreference('greed-run', { focus: 'safe', keepForNextRun: true });
+            store.setGridFocusPreference('greed-run', { focus: 'greedy', keepForNextRun: false });
+
+            expect(store.getGridFocusPreference('greed-run')).toEqual({ focus: 'greedy', keepForNextRun: false });
+        });
+    });
+
     describe('loadState', () => {
         it('ersetzt den kompletten State und emittiert state-loaded', () => {
             const store = new EconomyStore();
