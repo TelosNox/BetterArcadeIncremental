@@ -1,5 +1,6 @@
 import { Boot } from './scenes/Boot';
 import { MachineScene } from './scenes/MachineScene';
+import { TransitionScene } from './scenes/TransitionScene';
 import { AUTO, Game } from 'phaser';
 
 //  Find out more information about the Game Config at:
@@ -12,7 +13,8 @@ const config: Phaser.Types.Core.GameConfig = {
     backgroundColor: '#101018',
     scene: [
         Boot,
-        MachineScene
+        MachineScene,
+        TransitionScene
     ]
 };
 

@@ -14,3 +14,89 @@ body {
     justify-content: center;
     align-items: center;
 }
+
+.game-shell {
+    position: relative;
+    width: 1024px;
+    height: 768px;
+}
+
+.hall-hub {
+    position: absolute;
+    inset: 0;
+    background-color: #101018;
+    color: rgba(255, 255, 255, 0.87);
+    padding: 32px 48px;
+    box-sizing: border-box;
+    overflow-y: auto;
+}
+
+.hall-hub__credits {
+    font-size: 1.2em;
+    color: #ffe066;
+}
+
+.hall-hub__machines {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.hall-hub__machine-card {
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 4px;
+    padding: 16px 20px;
+    min-width: 220px;
+}
+
+.hall-hub__machine-card button {
+    display: block;
+    margin-top: 12px;
+    padding: 8px 16px;
+    background-color: #27ae60;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.87);
+    cursor: pointer;
+}
+
+.hall-hub__machine-card button:hover {
+    background-color: #2ecc71;
+}
+
+.hall-hub__machine-card button:disabled {
+    cursor: not-allowed;
+    border-color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.4);
+    background-color: #333;
+}
+
+.hall-hub__machine-card--locked {
+    opacity: 0.7;
+}
+
+.hall-hub__machine-card--locked button {
+    background-color: #555555;
+}
+
+.attendant-panel {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.3);
+    font-size: 0.9em;
+}
+
+.attendant-panel button {
+    background-color: #34495e;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.87);
+    padding: 6px 12px;
+    cursor: pointer;
+}
+
+.attendant-panel button:disabled {
+    cursor: not-allowed;
+    border-color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.4);
+    background-color: #222;
+}

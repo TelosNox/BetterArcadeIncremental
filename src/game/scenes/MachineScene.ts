@@ -4,7 +4,9 @@ import { PatternEngine } from '../../engine/PatternEngine';
 import { PushYourLuckRun } from '../../engine/PushYourLuckEngine';
 import type { MachineConfig, RiskTier } from '../../engine/types';
 import { getEffectiveFailureChance, getMachineConfig } from '../../data/machines.config';
+import { chooseAttendantTier, gainKnowledgeFromManualPlay, getAttendantTier } from '../../engine/AttendantEngine';
 import { economyStore, persist } from '../economy';
+import { getCurrentView } from '../viewState';
 
 // EINE generische Szene fuer alle vier Automaten (CLAUDE.md Workflow-Regel).
 // Liest ausschliesslich machines.config.ts; automatenspezifische Werte
@@ -27,10 +29,18 @@ import { economyStore, persist } from '../economy';
 // STATUS.md, aufgeloester Blocker "Phase 3 Spec-Abweichung").
 
 type Phase = 'planning' | 'executing' | 'busted' | 'milestone' | 'completed';
+type ViewChangedPayload = { view: 'machine' | 'hall' };
 
 const MAX_QUEUE_LENGTH = 6;
 const STEP_DELAY_MS = 700;
 const STATE_COLORS = [0x2ecc71, 0xf1c40f, 0xe74c3c, 0x9b59b6, 0x3498db];
+
+// Attendant-Automatisierung (Phase 5, game-spec.md 3.2): laeuft nur, waehrend
+// der Spieler in der Halle ist (view === 'hall', siehe App.tsx), niemals
+// waehrend er selbst am Automaten steht -- aktives Spielen bleibt so immer
+// die bewusste Wahl des Spielers, nicht etwas, das er "wegklicken" muss.
+const ATTENDANT_QUEUE_LENGTH = 3;
+const ATTENDANT_TICK_INTERVAL_MS = 1000;
 
 export class MachineScene extends Scene {
     private config!: MachineConfig;
@@ -43,6 +53,9 @@ export class MachineScene extends Scene {
     private phase: Phase = 'planning';
     private queue: RiskTier[] = [];
     private feedback = '';
+    // true nur, waehrend der Spieler in der Halle ist (App.tsx emittiert
+    // 'view-changed'), siehe tickAttendant().
+    private attendantTicking = false;
 
     private scoreText!: Phaser.GameObjects.Text;
     private feedbackText!: Phaser.GameObjects.Text;
@@ -50,6 +63,7 @@ export class MachineScene extends Scene {
     private patternLabel!: Phaser.GameObjects.Text;
     private forecastText!: Phaser.GameObjects.Text;
     private queueText!: Phaser.GameObjects.Text;
+    private attendantStatusText!: Phaser.GameObjects.Text;
     private dynamicObjects: Phaser.GameObjects.GameObject[] = [];
 
     constructor() {
@@ -99,7 +113,48 @@ export class MachineScene extends Scene {
             fontFamily: 'Arial', fontSize: 16, color: '#88ccff', align: 'center',
         }).setOrigin(0.5);
 
+        this.attendantStatusText = this.add.text(20, 730, '', {
+            fontFamily: 'Arial', fontSize: 13, color: '#999999',
+        });
+
         EventBus.emit('current-scene-ready', this);
+
+        // Bruecke React (HallHub) -> Phaser: die Halle laesst den Spieler
+        // einen Automaten anwaehlen, ohne dass React die Phaser-Szenen-API
+        // direkt kennen muss (EventBus als einzige Bruecke, keine neue
+        // globale State-Loesung parallel zu EconomyStore). Bewusst HIER
+        // registriert (auf der eigenen, aktiven ScenePlugin-Instanz) statt
+        // global in main.ts ueber game.scene.start() -- letzteres crasht
+        // Phasers SceneManager, wenn es von ausserhalb des Update-Loops
+        // (ein React-Klick-Handler) auf eine bereits laufende Szene
+        // angewendet wird. Listener wird beim Szenenwechsel wieder entfernt,
+        // damit sich beim naechsten create() kein zweiter aufbaut.
+        const handleRequestMachine = ({ machineId }: { machineId: string }) => {
+            this.scene.start('Machine', { machineId });
+        };
+        EventBus.on('request-machine', handleRequestMachine);
+        this.events.once('shutdown', () => EventBus.off('request-machine', handleRequestMachine));
+
+        // Attendant-Automatisierung (Phase 5): Initialwert synchron aus
+        // viewState.ts lesen (race-frei, siehe dortiger Kommentar -- ein rein
+        // event-basierter Ansatz kann das erste 'view-changed' verpassen,
+        // falls React frueher emittiert als Phaser diese Szene erzeugt).
+        // App.tsx emittiert 'view-changed' bei jedem weiteren Wechsel
+        // zwischen Automat-Ansicht und Halle. Nur waehrend 'hall' laeuft der
+        // Automat automatisiert weiter (implementation-plan.md Phase-5-
+        // Abnahme).
+        this.attendantTicking = getCurrentView() === 'hall';
+        const handleViewChanged = ({ view }: ViewChangedPayload) => {
+            this.attendantTicking = view === 'hall';
+            this.updateAttendantStatusText();
+            if (this.attendantTicking) {
+                this.tickAttendant();
+            }
+        };
+        EventBus.on('view-changed', handleViewChanged);
+        this.events.once('shutdown', () => EventBus.off('view-changed', handleViewChanged));
+
+        this.time.addEvent({ delay: ATTENDANT_TICK_INTERVAL_MS, loop: true, callback: () => this.tickAttendant() });
 
         this.renderPhase();
     }
@@ -159,6 +214,7 @@ export class MachineScene extends Scene {
         this.clearDynamic();
         this.scoreText.setText(`Punkte: ${this.run.getScore().toFixed(1)}`);
         this.updatePatternDisplay();
+        this.updateAttendantStatusText();
         this.feedbackText.setText(this.feedback);
         this.queueText.setText(
             this.queue.length > 0 ? `Plan: ${this.queue.map((tier) => tier.id).join(' -> ')}` : 'Plan: (leer)',
@@ -244,12 +300,19 @@ export class MachineScene extends Scene {
         this.phase = 'executing';
         this.feedback = '';
         this.renderPhase();
-        this.runQueueStep(0);
+        this.runQueueStep(0, false);
     }
 
-    private runQueueStep(index: number): void {
+    private executeAttendantQueue(): void {
+        this.phase = 'executing';
+        this.feedback = '';
+        this.renderPhase();
+        this.runQueueStep(0, true);
+    }
+
+    private runQueueStep(index: number, isAttendant: boolean): void {
         if (index >= this.queue.length || this.run.getStatus() !== 'active') {
-            this.finishExecution();
+            this.finishExecution(isAttendant);
             return;
         }
 
@@ -261,51 +324,131 @@ export class MachineScene extends Scene {
         // tatsaechlich auf das Ergebnis, statt nur im Feedback-Text zu
         // stehen (siehe STATUS.md, aufgeloester Blocker).
         this.patternState = this.patternEngine.sampleNext(this.patternState);
-        const effectiveFailureChance = getEffectiveFailureChance(
+        const patternFailureChance = getEffectiveFailureChance(
             tier,
             this.patternEngine.getStates(),
             this.patternState,
         );
-        const effectiveTier: RiskTier = { ...tier, failureChance: effectiveFailureChance };
-        const result = this.run.resolveAction(effectiveTier);
+
+        let resolvedTier: RiskTier;
+        if (isAttendant) {
+            const knowledge = economyStore.getAttendantKnowledge(this.config.id);
+            resolvedTier = getAttendantTier(tier, knowledge, patternFailureChance);
+        } else {
+            resolvedTier = { ...tier, failureChance: patternFailureChance };
+            // Musterkenntnis steigt primaer durch manuelles Spielen
+            // (game-spec.md 3.2) -- jede manuell aufgeloeste Aktion zaehlt,
+            // unabhaengig von Erfolg/Fehlschlag.
+            const knowledge = economyStore.getAttendantKnowledge(this.config.id);
+            economyStore.setAttendantKnowledge(this.config.id, gainKnowledgeFromManualPlay(knowledge));
+        }
+        const result = this.run.resolveAction(resolvedTier);
 
         this.updatePatternDisplay();
         this.scoreText.setText(`Punkte: ${this.run.getScore().toFixed(1)}`);
 
-        const effectivePct = Math.round(effectiveFailureChance * 100);
+        const prefix = isAttendant ? '[Attendant] ' : '';
+        const effectivePct = Math.round(resolvedTier.failureChance * 100);
         if (result.success) {
-            this.feedback = `Schritt ${index + 1}: Erfolg mit "${tier.id}" (+${result.payout.toFixed(1)} Punkte, Fangchance war ${effectivePct}% bei Muster "${this.patternState}").`;
+            this.feedback = `${prefix}Schritt ${index + 1}: Erfolg mit "${tier.id}" (+${result.payout.toFixed(1)} Punkte, Fangchance war ${effectivePct}% bei Muster "${this.patternState}").`;
         } else {
-            this.feedback = `Schritt ${index + 1}: Fehlschlag bei "${tier.id}" (Fangchance ${effectivePct}% – Muster stand auf "${this.patternState}") – der Zug kam zu früh. Punktestand auf 0 zurückgesetzt.`;
+            this.feedback = `${prefix}Schritt ${index + 1}: Fehlschlag bei "${tier.id}" (Fangchance ${effectivePct}% – Muster stand auf "${this.patternState}") – der Zug kam zu früh. Punktestand auf 0 zurückgesetzt.`;
         }
         this.feedbackText.setText(this.feedback);
 
-        this.time.delayedCall(STEP_DELAY_MS, () => this.runQueueStep(index + 1));
+        this.time.delayedCall(STEP_DELAY_MS, () => this.runQueueStep(index + 1, isAttendant));
     }
 
-    private finishExecution(): void {
+    private finishExecution(isAttendant: boolean): void {
         this.queue = [];
 
         if (this.run.getStatus() === 'busted') {
             this.phase = 'busted';
+            if (isAttendant) {
+                this.startNewRun();
+            }
             this.renderPhase();
             return;
         }
 
         const isFinal = this.run.getReachedMilestones().length >= this.config.milestones.length;
-        if (isFinal && !economyStore.isMachineCompleted(this.config.id)) {
+        const isFirstCompletion = isFinal && !economyStore.isMachineCompleted(this.config.id);
+        if (isFirstCompletion) {
             economyStore.markMachineCompleted(this.config.id);
             persist();
+
+            if (this.config.entryPoint) {
+                // Durchbruch-Moment (game-spec.md Abschnitt 2): das erstmalige
+                // Durchspielen des Layer-0-Automaten IST der Durchbruch (PM-
+                // Design-Entscheidung, siehe STATUS.md). Baukasten 1.8: dieser
+                // grosse Ueberraschungseffekt wird NUR hier ausgeloest, nicht
+                // fuer Automat 2-4 (die sind nie entryPoint). Lauf wird
+                // automatisch gesichert, da der Spieler ab hier die Kontrolle
+                // an die Reveal-Sequenz abgibt statt selbst zu entscheiden.
+                if (this.run.canBank()) {
+                    const banked = this.run.bank();
+                    economyStore.addTickets(this.config.id, banked);
+                    persist();
+                }
+                this.scene.start('Transition', { machineId: this.config.id });
+                return;
+            }
         }
 
         if (this.run.canBank()) {
             this.phase = isFinal ? 'completed' : 'milestone';
+            if (isAttendant) {
+                // Attendant trifft Meilenstein-Entscheidungen unbeaufsichtigt
+                // immer sicher: Sichern statt weiter zu riskieren (der
+                // Spieler ist ja gerade nicht am Automaten).
+                this.bankRun();
+                return;
+            }
             this.renderPhase();
             return;
         }
 
         this.phase = 'planning';
         this.renderPhase();
+    }
+
+    // Startet -- ausschliesslich waehrend der Spieler in der Halle ist
+    // (attendantTicking) und der Attendant fuer diesen Automaten
+    // freigeschaltet ist (game-spec.md 3.2: freischaltbar nach erstmaligem
+    // Durchspielen) -- automatisiert eine neue Runde, oder loest eine vom
+    // Spieler offen gelassene Meilenstein-/Bust-Entscheidung sicher auf,
+    // damit der Automat nicht einfach haengen bleibt, waehrend niemand
+    // zusieht.
+    private tickAttendant(): void {
+        if (!this.attendantTicking) return;
+        if (!economyStore.isMachineCompleted(this.config.id)) return;
+        if (this.phase === 'executing') return;
+
+        if (this.phase === 'busted') {
+            this.startNewRun();
+            this.renderPhase();
+            return;
+        }
+        if (this.phase === 'milestone' || this.phase === 'completed') {
+            this.bankRun();
+            return;
+        }
+        if (this.phase === 'planning' && this.queue.length === 0) {
+            const knowledge = economyStore.getAttendantKnowledge(this.config.id);
+            const chosenTier = chooseAttendantTier(this.config.riskTiers, knowledge);
+            this.queue = Array.from({ length: ATTENDANT_QUEUE_LENGTH }, () => chosenTier);
+            this.executeAttendantQueue();
+        }
+    }
+
+    private updateAttendantStatusText(): void {
+        if (!economyStore.isMachineCompleted(this.config.id)) {
+            this.attendantStatusText.setText('Attendant: noch nicht freigeschaltet (erst durchspielen)');
+            return;
+        }
+        const knowledgePct = Math.round(economyStore.getAttendantKnowledge(this.config.id) * 100);
+        const status = this.attendantTicking ? 'aktiv (Spieler in der Halle)' : 'pausiert (Spieler am Automaten)';
+        this.attendantStatusText.setText(`Attendant: ${status} – Musterkenntnis ${knowledgePct}%`);
     }
 
     private bankRun(): void {

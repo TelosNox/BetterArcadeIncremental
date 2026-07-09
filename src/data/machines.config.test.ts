@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { GREED_RUN, getEffectiveFailureChance, getEntryPointMachine, getMachineConfig } from './machines.config';
+import {
+    BEAT_LEDGER,
+    CHAMPIONS_LEDGER,
+    GREED_RUN,
+    MACHINES,
+    MACHINE_UNLOCK_COST,
+    TRAP_TUNNELS,
+    getEffectiveFailureChance,
+    getEntryPointMachine,
+    getMachineConfig,
+} from './machines.config';
 import type { RiskTier } from '../engine/types';
+import { PatternEngine } from '../engine/PatternEngine';
+import { PushYourLuckRun } from '../engine/PushYourLuckEngine';
 
 const states = ['fern', 'nah', 'alarm']; // sicher -> gefaehrlich
 
@@ -16,6 +28,61 @@ describe('machines.config', () => {
 
         it('liefert Greed Run als entryPoint-Automat', () => {
             expect(getEntryPointMachine()).toBe(GREED_RUN);
+        });
+
+        it('findet Automat 2-4 ueber ihre id', () => {
+            expect(getMachineConfig('trap-tunnels')).toBe(TRAP_TUNNELS);
+            expect(getMachineConfig('beat-ledger')).toBe(BEAT_LEDGER);
+            expect(getMachineConfig('champions-ledger')).toBe(CHAMPIONS_LEDGER);
+        });
+    });
+
+    describe('Automaten-Konfigurationen (alle vier, Phase 6)', () => {
+        it('enthaelt genau 4 Automaten', () => {
+            expect(MACHINES).toHaveLength(4);
+        });
+
+        it('hat genau einen entryPoint-Automaten', () => {
+            expect(MACHINES.filter((machine) => machine.entryPoint)).toHaveLength(1);
+        });
+
+        it.each(MACHINES)('$name: PatternConfig ist gueltig (PatternEngine wirft nicht)', (machine) => {
+            expect(() => new PatternEngine(machine.pattern)).not.toThrow();
+        });
+
+        it.each(MACHINES)('$name: Milestones sind gueltig (PushYourLuckRun wirft nicht)', (machine) => {
+            expect(() => new PushYourLuckRun(machine.milestones)).not.toThrow();
+        });
+
+        it.each(MACHINES)(
+            '$name: safe < balanced < risky bei EV UND Risiko in jedem Musterzustand (Trade-off-Check)',
+            (machine) => {
+                const [safeTier, balancedTier, riskyTier] = machine.riskTiers;
+                for (const state of machine.pattern.states) {
+                    const safeChance = getEffectiveFailureChance(safeTier, machine.pattern.states, state);
+                    const balancedChance = getEffectiveFailureChance(balancedTier, machine.pattern.states, state);
+                    const riskyChance = getEffectiveFailureChance(riskyTier, machine.pattern.states, state);
+                    expect(safeChance).toBeLessThan(balancedChance);
+                    expect(balancedChance).toBeLessThan(riskyChance);
+
+                    const meanPayout = (tier: RiskTier) => (tier.payoutRange[0] + tier.payoutRange[1]) / 2;
+                    const evSafe = (1 - safeChance) * meanPayout(safeTier);
+                    const evBalanced = (1 - balancedChance) * meanPayout(balancedTier);
+                    const evRisky = (1 - riskyChance) * meanPayout(riskyTier);
+                    expect(evSafe).toBeLessThan(evBalanced);
+                    expect(evBalanced).toBeLessThan(evRisky);
+                }
+            },
+        );
+
+        it('MACHINE_UNLOCK_COST deckt alle Nicht-entryPoint-Automaten ab, mit steigenden Schwellen (game-spec.md 3.3)', () => {
+            const nonEntryPoint = MACHINES.filter((machine) => !machine.entryPoint);
+            for (const machine of nonEntryPoint) {
+                expect(MACHINE_UNLOCK_COST[machine.id]).toBeGreaterThan(0);
+            }
+            const costs = nonEntryPoint.map((machine) => MACHINE_UNLOCK_COST[machine.id]);
+            const sorted = [...costs].sort((a, b) => a - b);
+            expect(costs).toEqual(sorted);
         });
     });
 
