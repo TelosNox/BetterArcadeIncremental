@@ -3,7 +3,7 @@ import { EventBus } from '../EventBus';
 import { PatternEngine } from '../../engine/PatternEngine';
 import { PushYourLuckRun } from '../../engine/PushYourLuckEngine';
 import type { MachineConfig, RiskTier } from '../../engine/types';
-import { getMachineConfig } from '../../data/machines.config';
+import { getEffectiveFailureChance, getMachineConfig } from '../../data/machines.config';
 import { economyStore, persist } from '../economy';
 
 // EINE generische Szene fuer alle vier Automaten (CLAUDE.md Workflow-Regel).
@@ -17,10 +17,14 @@ import { economyStore, persist } from '../economy';
 //   -> Ergebnis mit Kausalitaets-Feedback -> Meilenstein-Entscheidung
 //   (Banking vs. Weitermachen) -> Abschluss beim letzten Checkpoint.
 //
-// PatternEngine liefert hier nur die naechste-Schritt-Prognose (Baukasten
-// 1.10/1.11) und die "echte" Musterbewegung zur Einordnung von Fehlschlaegen;
-// die tatsaechliche Erfolg/Fehlschlag-Entscheidung inkl. Score-Reset kommt
-// ausschliesslich aus PushYourLuckRun.resolveAction (nicht neu gebaut).
+// PatternEngine (Musterzustand/Prognose) und PushYourLuckEngine (Erfolg/
+// Fehlschlag/Score) bleiben unveraendert und unabhaengig voneinander
+// (Architektur-Kurzregel CLAUDE.md). Die Verzahnung passiert ausschliesslich
+// hier: getEffectiveFailureChance() (machines.config.ts) berechnet aus dem
+// gesampelten Musterzustand + der Basis-RiskTier eine effektive
+// failureChance, mit der resolveAction() aufgerufen wird -- die Prognose
+// hat dadurch echten strategischen Wert statt nur Deko zu sein (siehe
+// STATUS.md, aufgeloester Blocker "Phase 3 Spec-Abweichung").
 
 type Phase = 'planning' | 'executing' | 'busted' | 'milestone' | 'completed';
 
@@ -173,6 +177,24 @@ export class MachineScene extends Scene {
         // 'executing': bewusst keine interaktiven Elemente (kein Reflex-Input, game-spec.md 4.1)
     }
 
+    // Effektive, musterzustandsabhaengige Fangchance fuer den JETZT aktuellen
+    // Musterzustand -- gilt garantiert nur fuer den naechsten ausgefuehrten
+    // Schritt (das Muster kann sich waehrend der Ausfuehrung weiterbewegen,
+    // siehe game-spec.md 4.2: nur der naechste Schritt ist vorhersagbar).
+    private describeTier(tier: RiskTier): string {
+        const effective = getEffectiveFailureChance(tier, this.patternEngine.getStates(), this.patternState);
+        const effectivePct = Math.round(effective * 100);
+
+        if (tier.failureChance <= 0) {
+            return `Fangchance ${effectivePct}% (musterunabhängig)`;
+        }
+        const basePct = Math.round(tier.failureChance * 100);
+        if (effectivePct === basePct) {
+            return `Fangchance ${effectivePct}% (Basis, Muster "${this.patternState}" neutral)`;
+        }
+        return `Fangchance ${effectivePct}% (Basis ${basePct}%, Muster "${this.patternState}")`;
+    }
+
     private renderTierButtons(): void {
         const tiers = this.config.riskTiers;
         const startX = 512 - ((tiers.length - 1) * 300) / 2;
@@ -180,7 +202,7 @@ export class MachineScene extends Scene {
 
         tiers.forEach((tier, index) => {
             const x = startX + index * 300;
-            const label = `${tier.id}\nPayout ${tier.payoutRange[0]}-${tier.payoutRange[1]}\nFangchance ${Math.round(tier.failureChance * 100)}%`;
+            const label = `${tier.id}\nPayout ${tier.payoutRange[0]}-${tier.payoutRange[1]}\n${this.describeTier(tier)}`;
             this.makeButton(
                 x,
                 420,
@@ -232,16 +254,29 @@ export class MachineScene extends Scene {
         }
 
         const tier = this.queue[index];
+        // Muster zuerst einen Schritt weiterbewegen (das ist die "Position
+        // der Patrouille" fuer diesen Schritt), DANACH die daraus folgende
+        // effektive failureChance berechnen und erst damit resolveAction
+        // aufrufen -- so wirkt der (teilweise vorhersagbare) Musterzustand
+        // tatsaechlich auf das Ergebnis, statt nur im Feedback-Text zu
+        // stehen (siehe STATUS.md, aufgeloester Blocker).
         this.patternState = this.patternEngine.sampleNext(this.patternState);
-        const result = this.run.resolveAction(tier);
+        const effectiveFailureChance = getEffectiveFailureChance(
+            tier,
+            this.patternEngine.getStates(),
+            this.patternState,
+        );
+        const effectiveTier: RiskTier = { ...tier, failureChance: effectiveFailureChance };
+        const result = this.run.resolveAction(effectiveTier);
 
         this.updatePatternDisplay();
         this.scoreText.setText(`Punkte: ${this.run.getScore().toFixed(1)}`);
 
+        const effectivePct = Math.round(effectiveFailureChance * 100);
         if (result.success) {
-            this.feedback = `Schritt ${index + 1}: Erfolg mit "${tier.id}" (+${result.payout.toFixed(1)} Punkte). Muster stand auf "${this.patternState}".`;
+            this.feedback = `Schritt ${index + 1}: Erfolg mit "${tier.id}" (+${result.payout.toFixed(1)} Punkte, Fangchance war ${effectivePct}% bei Muster "${this.patternState}").`;
         } else {
-            this.feedback = `Schritt ${index + 1}: Fehlschlag bei "${tier.id}" (Fangchance ${Math.round(tier.failureChance * 100)}%) – Muster stand auf "${this.patternState}", der Zug kam zu früh. Punktestand auf 0 zurückgesetzt.`;
+            this.feedback = `Schritt ${index + 1}: Fehlschlag bei "${tier.id}" (Fangchance ${effectivePct}% – Muster stand auf "${this.patternState}") – der Zug kam zu früh. Punktestand auf 0 zurückgesetzt.`;
         }
         this.feedbackText.setText(this.feedback);
 
