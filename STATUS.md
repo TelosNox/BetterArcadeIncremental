@@ -4,8 +4,235 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7 (Hallen-Upgrades & Cross-Layer-Feedback) — Code steht, Tests/Lint/Build/manuelle Verifikation grün, siehe "Phase 7" unten. **Wartet auf Nutzer-Rückmeldung** (normale CLAUDE.md-Regel gilt seit Phase 7 wieder: nach Phasenabschluss anhalten).
-**Läuft/als Nächstes:** Phase 8 (Politur / Juice) — NICHT begonnen, wartet auf Nutzer-Go. Nutzer will diesmal selbst testen (`npm run dev`, kompletter Kreislauf Ticket → Credit → Hallen-Upgrade).
+**Zuletzt abgeschlossen:** Phase 7b (Kernmechanik-Revision) — Code steht, 185/185 Tests grün, Lint/Typecheck/Build grün, manuell gegen `npm run dev` verifiziert (siehe Ergebnis-Abschnitt unten). Separater BUG (Rückweg Automat→Halle) ebenfalls behoben.
+**Läuft/als Nächstes:** Wartet auf Nutzer-Verifikation/Playtest der Revision. Danach Entscheidung: weiter mit Phase 8 (Politur) oder weitere Balance-Iteration auf Basis von Phase-7b-Feedback.
+
+## BUG (behoben, 2026-07-09) — Rückweg Automat→Halle nach zweitem Durchlauf
+
+**Ursache gefunden:** Es gab bis dahin GAR KEINEN manuellen Weg von einem
+Automaten zurück in die Halle — nur das einmalige automatische Reveal
+(`TransitionScene`) beim ERSTEN Durchspielen des entryPoint-Automaten setzte
+`view` auf `'hall'`. Ein zweiter Durchlauf (Score-Attack) oder jeder Besuch
+von Automat 2-4 endete deshalb zwangsläufig in einer Sackgasse — es war nie
+ein Bug im `'request-machine'`-Listener, sondern ein von Anfang an fehlender
+Rückweg, der nur beim allerersten Mal durch den automatischen Reveal
+kaschiert wurde.
+
+**Fix:** Neuer persistenter "Zur Halle"-Button in `MachineScene` (oben links,
+`renderBackToHallButton()`, sichtbar sobald der entryPoint-Automat
+durchgespielt ist — vorher gäbe es laut game-spec.md Abschnitt 2 noch keine
+Meta-UI). Emittiert ein neues EventBus-Event `'return-to-hall'`, das
+`App.tsx` genau wie `'hall-reveal'` behandelt (`setView('hall')`), OHNE die
+laufende `MachineScene` zu beenden — der Automat läuft im Hintergrund weiter,
+exakt wie beim Reveal-Übergang (Phase 5).
+
+**Verifiziert (Playwright-Treiberskript gegen `npm run dev`):** Automat →
+Zur Halle → Spielen (zweiter Durchlauf) → Zur Halle erneut — funktioniert
+beide Male ohne Reload, keine Konsolenfehler.
+
+## NEUE PHASE 7b: Kernmechanik-Revision (2026-07-09, mit Nutzer abgestimmt)
+
+Nutzer-Playtest-Feedback zu Phase 3-7: die Muster-Vorschau ("Prognose") fühlte
+sich wirkungslos an, weil sie nur eine Wahrscheinlichkeit anzeigt statt einer
+konkreten, planbaren Entscheidung. Erwartungshaltung des Nutzers: ein festes
+Pattern pro Run, von dem man den nächsten Zug sieht, plus zwei Aktionen, die
+sich exakt kontern (schere-stein-papier-artig, aber nur EIN Konter-Paar, keine
+volle Drei-Wege-Rotation), plus mehrere sicherere Zwischenstufen. Nach
+Rückfrage folgende verbindliche Entscheidungen (siehe auch game-spec.md 4.1a
+für die spielerseitige Beschreibung):
+
+1. **Fixes Pattern pro Run:** Ganze Zug-Sequenz steht ab Run-Start fest
+   (vorab durch wiederholtes `PatternEngine.sampleNext()` generiert und als
+   Array eingefroren), nicht mehr live pro Schritt neu gewürfelt.
+2. **Zwei harte Konter-Aktionen + mehrere Zwischenstufen:** Ersetzt das
+   bisherige generische safe/balanced/risky-Dreiklang. Die zwei harten
+   Aktionen sollen PRO AUTOMAT thematisch benannt werden (löst auch den
+   vorherigen PM-Befund "alle vier Automaten fühlen sich gleich an").
+3. **Auflösung ohne Engine-Änderung an PatternEngine:** Von den Pattern-
+   Zuständen (aktuell 3 pro Automat) werden zwei als "Gegenstück zu harter
+   Aktion X" bzw. "Gegenstück zu harter Aktion Y" deklariert, der/die
+   übrigen als neutral. Harte Aktion scheitert NUR beim exakten eigenen
+   Gegenstück-Zustand, trifft bei JEDEM anderen Zustand (auch beim
+   Gegenstück der anderen harten Aktion und bei neutral). Zwischenstufen
+   bleiben zustandsunabhängig (eigene feste Fangchance je Stufe, mehrere
+   Abstufungen statt nur einer). `PatternEngine`-Klasse selbst bleibt
+   unverändert (Rollenzuweisung ist Data-/Scene-Layer-Logik wie schon bei
+   `getEffectiveFailureChance`); NUR die Interpretation von `getVisibility`
+   ändert sich (Ergebnis wird jetzt als Anzahl vorausschaubarer Züge der
+   FESTEN Sequenz interpretiert, nicht als Wahrscheinlichkeits-Reveal-Anteil
+   der nächsten Transition).
+4. **Fehlschlag = Teilstrafe, KEIN hartes Run-Ende mehr:** Das bisherige
+   "busted"-Konzept (`PushYourLuckRun.resolveAction`: Fehlschlag → Status
+   'busted', Score auf 0) entfällt. Stattdessen: Fehlschlag zieht einen Teil
+   (Richtwert 30–50 %, iterativ zu tunen) des aktuellen, ungebankten
+   Punktestands ab, der Run bleibt 'active' und läuft weiter. Das IST eine
+   echte Aenderung an `PushYourLuckEngine` (nicht nur Data-Layer) —
+   `resolveAction`s Fehlschlag-Semantik muss angepasst werden. Bestehende
+   Tests in `PushYourLuckEngine.test.ts`, die das alte busted-Verhalten
+   pruefen, muessen entsprechend aktualisiert werden (bewusste, gewollte
+   Verhaltensaenderung, keine Regression).
+5. **Automaten-interne Upgrades, bezahlt mit den EIGENEN Tickets des
+   Automaten (nicht mit Hallen-Credits):** Neue Progression-Achse pro
+   Automat — mehr Vorschau auf die feste Sequenz wird direkt mit den
+   Tickets DIESES Automaten gekauft. Das erfordert eine neue
+   `EconomyStore`-Faehigkeit (`spendTickets` o.ae., symmetrisch zu
+   `spendCredits`, aber pro Automat) sowie eine neue Kaufoberflaeche
+   (vermutlich in/bei `MachineScene`, nicht im hallenweiten
+   `UpgradePanel.tsx` — das bleibt ausschliesslich fuer Hallen-Credits-
+   Upgrades). `hall.config.ts`/`UpgradePanel.tsx` selbst bleiben
+   unveraendert; dies ist eine PARALLELE, separate Wirtschaft pro
+   Automat, keine Erweiterung der Hallen-Wirtschaft.
+
+**Wichtig — Abweichung vom bisherigen Arbeitsmodus:** Bisher galt "Engines
+(Phase 1+2) nicht veraendern, nur Data-/Scene-Layer". Fuer DIESE Phase ist das
+ausdruecklich aufgehoben fuer `PushYourLuckEngine` (Punkt 4) und `EconomyStore`
+(Punkt 5, neue Methode) -- beide Aenderungen sind hier bewusst angeordnet, kein
+Abweichen von der Architektur-Kurzregel. `PatternEngine` selbst bleibt
+unveraendert (Punkt 3). `AttendantEngine` muss an das neue Aktionsmodell
+(harte Aktionen + Zwischenstufen statt generischer RiskTier-Skala) angepasst
+werden -- wie der Attendant seine Aktionswahl trifft, ist Teil dieser Phase,
+nicht spaeter.
+
+Betroffene Dateien voraussichtlich: `src/engine/types.ts` (RiskTier/UpgradeDef-
+Form ueberarbeiten), `src/engine/PushYourLuckEngine.ts` (+Test),
+`src/engine/EconomyStore.ts` (+Test, neue Methode),
+`src/engine/AttendantEngine.ts` (+Test), `src/data/machines.config.ts`
+(komplett neue Aktions-/Rollenzuweisungs-Definitionen je Automat, neue
+Resolutionsfunktion statt `getEffectiveFailureChance`), `src/game/scenes/
+MachineScene.ts` (Ausfuehrung/Anzeige/neue Kaufoberflaeche fuer automaten-
+interne Upgrades), Tests entsprechend ueberall.
+
+### Ergebnis: Phase 7b umgesetzt (2026-07-09)
+
+**`src/engine/types.ts`:** `RiskTier` komplett ersetzt durch drei neue Typen:
+`HardActionDef` (`kind:'hard'`, `counterState`), `IntermediateActionDef`
+(`kind:'intermediate'`, feste `failureChance`), `MachineAction` (Union
+beider, Config-Zeit) und `ResolvedAction` (Engine-Zeit — das, womit
+`PushYourLuckEngine.resolveAction()` tatsaechlich wuerfelt, kennt weder
+"hart"/"Zwischenstufe" noch Pattern-Zustaende). `MachineConfig.riskTiers` ->
+`actions: MachineAction[]`. Neuer `MachineUpgradeDef`-Typ (`cost` in Tickets
+DIESES Automaten statt Credits, `effect: {type:'visibility', value}`) —
+`MachineConfig.upgrades: MachineUpgradeDef[]` (vorher immer leeres
+`UpgradeDef[]`, jetzt erstmals befuellt). `EngineState` um
+`machineUpgrades: Record<string, string[]>` erweitert (SaveSystem/
+EconomyStore entsprechend mitgezogen, kein Save-Versions-Bump noetig, da
+additiv mit sicherem Default).
+
+**`src/engine/PushYourLuckEngine.ts`:** `RunStatus` verliert `'busted'`
+(nur noch `'active' | 'banked'`). `resolveAction()` zieht bei Fehlschlag
+`FAILURE_PENALTY_FRACTION` (= 0.4, im geforderten Richtwert 30-50%, als
+optionaler Parameter ueberschreibbar) vom AKTUELLEN Punktestand ab, Lauf
+bleibt `'active'`. Design-Entscheidung (nicht explizit in der Vorgabe,
+hier bewusst getroffen): Meilenstein-Erreichung ist jetzt "sticky"
+(`peakScore`, historisches Maximum) statt score-basiert — ein einmal
+erreichter bankbarer Meilenstein bleibt bankbar, auch wenn ein spaeterer
+Fehlschlag den AKTUELLEN Punktestand darunter drueckt. Ohne das haette eine
+Teilstrafe denselben Effekt auf die Banking-Berechtigung wie das alte harte
+Run-Ende gehabt und die Revision teilweise unterlaufen. `bank()` sichert
+weiterhin den tatsaechlichen (reduzierten) Punktestand, nicht den Peak.
+
+**Bewusst geaenderte alte Tests in `PushYourLuckEngine.test.ts`:**
+- *"Fehlschlag setzt Punktestand auf 0 zurueck und beendet den Lauf als
+  'busted'"* → ersetzt durch *"Fehlschlag zieht FAILURE_PENALTY_FRACTION des
+  aktuellen Punktestands ab, Lauf bleibt aktiv"*.
+- *"wirft, wenn der Lauf bereits busted ist"* → entfernt (busted existiert
+  nicht mehr).
+- *"bank() wirft nach einem Fehlschlag (busted, Score bereits 0)"* → ersetzt
+  durch *"bank() bleibt nach einem Fehlschlag moeglich, sichert aber nur den
+  reduzierten aktuellen Punktestand"* (genau gegenteiliges, gewolltes
+  Verhalten).
+- Neu hinzugefuegt: Test fuer die Peak-Stickiness der Meilenstein-Erreichung,
+  Test fuer mehrere aufeinanderfolgende Fehlschlaege, Test fuer den
+  `penaltyFraction`-Parameter.
+
+**`src/engine/EconomyStore.ts`:** Neue Methode `spendTickets(machineId,
+amount)`, symmetrisch zu `spendCredits`, aber pro Automat. Neue Methoden
+`getMachineUpgrades`/`hasMachineUpgrade`/`purchaseMachineUpgrade` (Pro-
+Automat-Muster wie `attendantKnowledge`, Wert hier aber eine Liste gekaufter
+Upgrade-ids statt einer Zahl) — kaufen ueber `spendTickets`, nicht
+`spendCredits`. Neues Event `machine-upgrade-purchased`.
+
+**`src/data/machines.config.ts`:** Fuer alle vier Automaten neu definiert —
+je zwei thematisch benannte harte Aktionen mit Gegenstueck-Zustand + drei
+Zwischenstufen (die alten safe/balanced/risky-Basiswerte, jetzt WIRKLICH
+musterunabhaengig, keine `getEffectiveFailureChance`-Modulation mehr):
+
+| Automat | Harte Aktion 1 (Gegenstueck) | Harte Aktion 2 (Gegenstueck) | Neutraler Zustand |
+|---|---|---|---|
+| Greed Run | Blitzlauf (alarm) | Schleichgang (nah) | fern |
+| Trap Tunnels | Sprengladung (einsturz) | Stuetzpfeiler (wackelig) | stabil |
+| Beat Ledger | Powermove (doppelschlag) | Punktlandung (treibend) | ruhig |
+| Champion's Ledger | Angriff (defensiv) | Konter (aggressiv) | finte |
+
+Neue Resolutionsfunktion `resolveMachineAction(action, currentState)`
+ersetzt `getEffectiveFailureChance` vollstaendig (deterministisch: harte
+Aktion → failureChance 0 oder 1 je nach Zustandsvergleich; Zwischenstufe →
+unveraendert durchgereicht). `getVisibleMoveCount(visibility)` reinterpretiert
+`PatternEngine.getVisibility()` (unveraendert, weiterhin 0-1) als Zug-Anzahl
+(`* MAX_PREVIEW_MOVES=3`, gerundet, mindestens 1) — `PatternEngine`-Klasse
+selbst dabei nicht angefasst, wie gefordert.
+
+Trade-off-Check (design-toolbox.md Punkt 5) neu hergeleitet, da die alte
+zustandsabhaengige EV-Tabelle nicht mehr passt: stationaere Verteilung jedes
+Patterns per Power-Iteration bestimmt (Test-Hilfsfunktion, nicht Teil der
+Produktions-Logik) als Proxy fuer die "Blind-EV" einer harten Aktion (ohne
+Sichtbarkeit gespielt) — die liegt fuer beide harten Aktionen aller vier
+Automaten NACHWEISLICH unter der besten Zwischenstufen-EV (keine Dominanz
+beim Raten), waehrend die "Perfekt-Info-EV" (nur bei sichtbar sicherem
+Zustand gespielt) darueber liegt (Vorschau lohnt sich echt, design-
+toolbox.md 1.10) — beides per `it.each`-Test ueber alle vier Automaten
+automatisiert geprueft, konkrete Zahlen als Kommentar in `machines.config.ts`.
+
+Automaten-interne Upgrades (ticket-bezahlt): Greed Run 2 Stufen (15/40
+Tickets), Trap Tunnels 1 Stufe (20 Tickets), Beat Ledger keine (schon volle
+Sichtbarkeit), Champion's Ledger 2 Stufen (25/60 Tickets) — Anzahl
+entspricht jeweils der Laenge von `pattern.visibilityPerUpgrade` (per Test
+abgesichert).
+
+**`src/engine/AttendantEngine.ts`:** `getAttendantFailureChance`/
+`getAttendantTier` entfernt (basierten auf dem alten kontinuierlichen
+Fangchance-Modell). Neu: `getAttendantLookahead(visibleMoveCount,
+knowledge)` — wie viele der TATSAECHLICH sichtbaren Zuege der Attendant
+nutzen kann (0 bei Musterkenntnis 0, das volle Fenster bei voller Kenntnis).
+`chooseAttendantAction(hardActions, intermediateActions, knownState,
+knowledge)` — kennt der Attendant den Zustand an dieser Position (innerhalb
+seines Lookaheads), waehlt er IMMER eine dort garantiert sichere harte
+Aktion (bevorzugt die mit hoeherem Payout, falls beide sicher sind); sonst
+faellt er auf eine Zwischenstufe zurueck (rät nie blind auf eine harte
+Aktion). `getAttendantResolvedAction` skaliert wie bisher nur noch den
+Payout mit der Effizienz (`ATTENDANT_MAX_EFFICIENCY`, unveraendert) — die
+Fangchance bleibt unveraendert (0/1 bei harten Aktionen, die er ohnehin nur
+bei Erfolg spielt; fest bei Zwischenstufen, unabhaengig davon wer spielt).
+
+**`src/game/scenes/MachineScene.ts`:** Feste Zug-Sequenz (`sequence: string[]`,
+`sequenceCursor`) wird lazy per `PatternEngine.sampleNext()`-Kette erzeugt
+und NIE mehr veraendert (nur verlaengert). Vorschau zeigt bis zu
+`MAX_QUEUE_LENGTH` (6) kommende Positionen, davon `getVisibleMoveCount()`
+viele als konkrete Zustandsnamen, der Rest als "??". Aktions-Buttons zeigen
+bei harten Aktionen live, ob die Position (falls sichtbar) TRIFFT oder
+SCHEITERT. Neue Kaufoberflaeche fuer automaten-interne Upgrades direkt in
+der Szene (NICHT in `UpgradePanel.tsx`, das bleibt exklusiv Hallen-Credits).
+"Busted"-Phase/-Controls vollstaendig entfernt — `finishExecution()` prueft
+nur noch Meilenstein/Abschluss, kein `RunStatus`-Check auf Fehlschlag mehr
+noetig. Zusaetzlich: `renderBackToHallButton()` (Bugfix, siehe oben).
+
+**Verifiziert:** `npm test` (185/185 gruen, +46 gegenueber Phase 7), `npm run
+lint` sauber, `npx tsc --noEmit` sauber, `npm run build` erfolgreich.
+Manuell per Playwright-Treiberskript gegen `npm run dev` (Screenshots nicht
+Teil des Repos, nur Session-interne Verifikation): Greed Run UND Champion's
+Ledger geprueft — Vorschau zeigt konkrete kommende Zuege statt Wahrscheinlichkeit
+("Naechster Zug: nah", "Feste Sequenz: nah -> ?? -> ..."); harte Aktionen
+zeigen korrekt TRIFFT/SCHEITERT live im Button-Text und das tatsaechliche
+Ausfuehrungsergebnis stimmt IMMER mit dieser Vorschau ueberein (deterministisch,
+kein Zufall bei der Trefferfrage); mehrfache Fehlschlaege in Folge reduzieren
+den Punktestand nur graduell (kein Reset auf 0, kein Busted-Screen); Meilenstein/
+Score-Attack/automatischer Hallen-Uebergang bei Erstdurchspielen funktionieren
+unveraendert; automaten-internes Upgrade "Streckenkenntnis I" fuer 15 Tickets
+gekauft (100 -> 85 Tickets), Vorschau-Fenster wuchs sofort von 1 auf 2 Zuege;
+Attendant lief mit dem neuen Aktionsmodell fehlerfrei automatisiert (Tickets
+100 -> 146.9 nach 25s Leerlauf in der Halle, keine Konsolenfehler).
+
+## Offene Design-Fragen (noch nicht final entschieden)
 
 ## Verlauf
 
@@ -17,6 +244,7 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 - [x] Phase 5 — Attendant-System — abgenommen (PM-Review 2026-07-09)
 - [x] Phase 6 — Automaten 2–4 — abgenommen (PM-Review 2026-07-09, siehe Bedingungen unten)
 - [x] Phase 7 — Hallen-Upgrades & Cross-Layer-Feedback — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Phase 7" unten)
+- [x] Phase 7b — Kernmechanik-Revision — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Ergebnis: Phase 7b umgesetzt" oben)
 - [ ] Phase 8 — Politur / Juice
 - [ ] Phase 9 — Abschluss-Erlebnis
 

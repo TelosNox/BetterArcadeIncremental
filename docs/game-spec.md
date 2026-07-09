@@ -69,6 +69,46 @@ Alle vier teilen sich dieselben drei Kernsysteme (Details siehe `implementation-
 4. **Meilenstein-Entscheidung:** An Checkpoints: Banking (Lauf sichern) oder Weitermachen (höheres Risiko für höheren Ertrag)
 5. **Abschluss-Kriterium:** Erreichen des letzten Checkpoints = "durchgespielt" → schaltet Attendant für diesen Automaten frei. Danach optionaler Score-Attack-Modus für wiederholtes Spielen (Baukasten 1.6)
 
+### 4.1a Kernmechanik-Revision (2026-07-09, ersetzt Teile von 4.1 und der Risiko-Achsen in 4.2–4.5)
+
+Nach Playtesting durch den Nutzer wurde die Auflösung von "Planung gegen
+Verhaltensmuster" neu festgelegt — die ursprüngliche Umsetzung (kontinuierlicher
+Gefahren-Level moduliert eine generische Fangchance, Muster wird live pro
+Ausführungsschritt neu gewürfelt) hat sich als zu abstrakt/zufällig anfühlend
+erwiesen. Neue, verbindliche Regeln:
+
+- **Festes Pattern pro Run:** Die komplette Zug-Sequenz eines Automaten-Runs
+  steht bei Run-Start fest (wie ein vorab generiertes Level-/Tunnellayout),
+  nicht mehr live neu gewürfelt pro Ausführungsschritt.
+- **Zwei Konter-Aktionen + mehrere Zwischenstufen:** Jeder Automat hat genau
+  zwei "harte" Aktionen (thematisch benannt, z. B. Angriff/Konter bei
+  Champion's Ledger), die sich gegenseitig exakt kontern, PLUS mehrere
+  "Zwischending"-Aktionen mit abgestuftem, aber geringerem Risiko/Ertrag
+  (state-unabhängig, ähnlich der bisherigen safe/balanced-Stufen).
+- **Auflösung:** Von den drei (oder mehr) Pattern-Zuständen sind zwei die
+  designierten Gegenstücke je einer harten Aktion; der/die übrigen Zustand/
+  Zustände gelten als neutral. Eine harte Aktion scheitert NUR, wenn der
+  aktuelle Pattern-Zug exakt ihr designiertes Gegenstück ist — bei jedem
+  anderen Zustand (inkl. neutral UND dem Gegenstück der jeweils anderen
+  harten Aktion) trifft sie. Zwischending-Aktionen sind vom Pattern-Zustand
+  unabhängig (eigene, im Voraus bekannte Fangchance je Stufe).
+- **Fehlschlag = Teilstrafe, kein Run-Ende:** Ein Fehlschlag kostet einen Teil
+  (nicht alles) des aktuell ungebankten Punktestands (genaue Größenordnung
+  30–50 %, iterativ zu tunen). Es gibt kein hartes "Busted"-Run-Ende mehr —
+  der Run läuft weiter, bis gebankt wird oder das letzte Milestone erreicht
+  ist.
+- **Vorschau als In-Automat-Progression:** Wie viele Züge der festen Sequenz
+  im Voraus sichtbar sind, ist über automaten-EIGENE Upgrades erweiterbar,
+  die mit den eigenen Tickets DIESES Automaten bezahlt werden (nicht mit
+  Hallen-Credits) — echte Fortschritts-Achse innerhalb eines einzelnen
+  Automaten, unabhängig von der Hallen-Wirtschaft.
+
+Technische Details/Begründung: siehe STATUS.md, Abschnitt zur Kernmechanik-
+Revision. Automaten-spezifische Bezeichnungen der zwei harten Aktionen (statt
+generischer "safe/balanced/risky"-Labels) sind Teil dieser Revision und lösen
+den zuvor in STATUS.md notierten Redundanz-Befund (alle vier Automaten fühlten
+sich mechanisch gleich an).
+
 ### 4.2 Automat 1 — "Greed Run" (Pac-Man-Twist)
 
 - **Thema:** Kleine Figur bewegt sich auf vorab platzierten Richtungs-Tokens durch ein Raster, sammelt Punkte, muss Patrouillen-Gegnern ausweichen

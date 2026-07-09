@@ -34,6 +34,7 @@ export class EconomyStore {
             attendantKnowledge: {},
             hallUpgrades: [],
             completedMachines: [],
+            machineUpgrades: {},
         };
     }
 
@@ -56,6 +57,25 @@ export class EconomyStore {
         const next = this.getTickets(machineId).plus(value);
         this.state.ticketsByMachine[machineId] = next;
         this.events.emit('tickets-changed', { machineId, tickets: next });
+    }
+
+    // Gibt false zurueck (ohne Mutation), wenn nicht genug Tickets DIESES
+    // Automaten vorhanden sind. Symmetrisch zu spendCredits, aber pro
+    // machineId -- fuer automaten-interne Upgrades (Phase 7b, bezahlt mit
+    // den eigenen Tickets statt Hallen-Credits, siehe purchaseMachineUpgrade).
+    spendTickets(machineId: string, amount: DecimalSource): boolean {
+        const value = Decimal.fromValue(amount);
+        assertNonNegative(value, 'spendTickets');
+
+        const current = this.getTickets(machineId);
+        if (current.lt(value)) {
+            return false;
+        }
+
+        const next = current.minus(value);
+        this.state.ticketsByMachine[machineId] = next;
+        this.events.emit('tickets-changed', { machineId, tickets: next });
+        return true;
     }
 
     // Wandelt alle gebankten Tickets eines Automaten zum uebergebenen Kurs
@@ -139,6 +159,37 @@ export class EconomyStore {
 
         this.state.hallUpgrades.push(upgradeId);
         this.events.emit('hall-upgrade-purchased', { upgradeId });
+        return true;
+    }
+
+    // Automaten-interne Upgrades (Phase 7b): analog zu hallUpgrades/
+    // hasHallUpgrade/purchaseHallUpgrade, aber PRO AUTOMAT gespeichert und
+    // mit den eigenen Tickets DIESES Automaten bezahlt (spendTickets statt
+    // spendCredits) -- folgt derselben Pro-Automat-Struktur wie
+    // attendantKnowledge (Record<string, ...> keyed by machineId), nur mit
+    // einer Liste gekaufter Upgrade-ids als Wert statt einer einzelnen Zahl.
+    getMachineUpgrades(machineId: string): readonly string[] {
+        return this.state.machineUpgrades[machineId] ?? [];
+    }
+
+    hasMachineUpgrade(machineId: string, upgradeId: string): boolean {
+        return this.getMachineUpgrades(machineId).includes(upgradeId);
+    }
+
+    // Kauft ein automaten-internes Upgrade genau einmal, bezahlt mit den
+    // Tickets DIESES Automaten. Gibt false zurueck, wenn es bereits gekauft
+    // wurde oder die Tickets nicht ausreichen (keine Mutation).
+    purchaseMachineUpgrade(machineId: string, upgradeId: string, cost: DecimalSource): boolean {
+        if (this.hasMachineUpgrade(machineId, upgradeId)) {
+            return false;
+        }
+        if (!this.spendTickets(machineId, cost)) {
+            return false;
+        }
+
+        const owned = this.state.machineUpgrades[machineId] ?? [];
+        this.state.machineUpgrades[machineId] = [...owned, upgradeId];
+        this.events.emit('machine-upgrade-purchased', { machineId, upgradeId });
         return true;
     }
 

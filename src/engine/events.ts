@@ -42,6 +42,7 @@ export type EngineEvents = {
     'machine-unlocked': { machineId: string };
     'machine-completed': { machineId: string };
     'hall-upgrade-purchased': { upgradeId: string };
+    'machine-upgrade-purchased': { machineId: string; upgradeId: string }; // Phase 7b: automaten-interne Upgrades
     'attendant-knowledge-changed': { machineId: string; knowledge: number };
     'state-loaded': { state: EngineState };
 };

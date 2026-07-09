@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { PushYourLuckRun } from './PushYourLuckEngine';
-import type { Milestone, RiskTier } from './types';
+import { FAILURE_PENALTY_FRACTION, PushYourLuckRun } from './PushYourLuckEngine';
+import type { Milestone, ResolvedAction } from './types';
 
-const safeTier: RiskTier = { id: 'safe', payoutRange: [5, 5], failureChance: 0 };
-const balancedTier: RiskTier = { id: 'balanced', payoutRange: [10, 20], failureChance: 0.3 };
-const riskyTier: RiskTier = { id: 'risky', payoutRange: [30, 60], failureChance: 0.6 };
+const safeTier: ResolvedAction = { id: 'safe', payoutRange: [5, 5], failureChance: 0 };
+const balancedTier: ResolvedAction = { id: 'balanced', payoutRange: [10, 20], failureChance: 0.3 };
+const riskyTier: ResolvedAction = { id: 'risky', payoutRange: [30, 60], failureChance: 0.6 };
 
 const milestones: Milestone[] = [
     { threshold: 10, bankable: true },
@@ -49,6 +49,7 @@ describe('PushYourLuckRun', () => {
 
             expect(result.success).toBe(true);
             expect(result.payout).toBe(5);
+            expect(result.penalty).toBe(0);
             expect(result.scoreAfter).toBe(5);
             expect(run.getScore()).toBe(5);
         });
@@ -68,29 +69,54 @@ describe('PushYourLuckRun', () => {
             expect(result.success).toBe(true);
         });
 
-        it('Fehlschlag setzt Punktestand auf 0 zurück und beendet den Lauf als "busted"', () => {
+        // Phase 7b (Kernmechanik-Revision, siehe STATUS.md): das fruehere
+        // harte Run-Ende bei Fehlschlag ("busted", Score auf 0) entfaellt.
+        // Ein Fehlschlag kostet stattdessen nur einen Teil
+        // (FAILURE_PENALTY_FRACTION) des AKTUELLEN Punktestands, der Lauf
+        // bleibt 'active'. Diese Tests ersetzen die alten busted-Tests
+        // bewusst (gewollte Verhaltensaenderung, keine Regression, siehe
+        // STATUS.md Aufstellung der geaenderten Tests).
+        it('Fehlschlag zieht FAILURE_PENALTY_FRACTION des aktuellen Punktestands ab, Lauf bleibt aktiv', () => {
             const run = new PushYourLuckRun(milestones);
             run.resolveAction(safeTier, scriptedRng([0.9999, 0])); // Score 5
             const result = run.resolveAction(riskyTier, scriptedRng([0.1])); // 0.1 < 0.6 -> Fehlschlag
 
             expect(result.success).toBe(false);
             expect(result.payout).toBe(0);
-            expect(result.scoreAfter).toBe(0);
-            expect(run.getScore()).toBe(0);
-            expect(run.getStatus()).toBe('busted');
+            expect(result.penalty).toBeCloseTo(5 * FAILURE_PENALTY_FRACTION);
+            expect(result.scoreAfter).toBeCloseTo(5 - 5 * FAILURE_PENALTY_FRACTION);
+            expect(run.getScore()).toBeCloseTo(5 - 5 * FAILURE_PENALTY_FRACTION);
+            expect(run.getStatus()).toBe('active');
         });
 
-        it('wirft, wenn der Lauf bereits busted ist', () => {
-            const run = new PushYourLuckRun(milestones);
-            run.resolveAction(riskyTier, scriptedRng([0.1]));
+        it('FAILURE_PENALTY_FRACTION liegt im Richtwert 30-50% (STATUS.md Phase 7b)', () => {
+            expect(FAILURE_PENALTY_FRACTION).toBeGreaterThanOrEqual(0.3);
+            expect(FAILURE_PENALTY_FRACTION).toBeLessThanOrEqual(0.5);
+        });
 
-            expect(() => run.resolveAction(safeTier, scriptedRng([0]))).toThrow(/busted/);
+        it('erlaubt eine abweichende penaltyFraction als optionalen Parameter', () => {
+            const run = new PushYourLuckRun(milestones);
+            run.resolveAction(safeTier, scriptedRng([0.9999, 0])); // Score 5
+            const result = run.resolveAction(riskyTier, scriptedRng([0.1]), 0.5);
+
+            expect(result.penalty).toBeCloseTo(2.5);
+            expect(result.scoreAfter).toBeCloseTo(2.5);
+        });
+
+        it('mehrere aufeinanderfolgende Fehlschlaege reduzieren den Punktestand kumulativ, ohne den Lauf zu beenden', () => {
+            const run = new PushYourLuckRun(milestones);
+            run.resolveAction(safeTier, scriptedRng([0.9999, 0])); // Score 5
+            run.resolveAction(riskyTier, scriptedRng([0.1])); // Fehlschlag: 5 -> 3
+            run.resolveAction(riskyTier, scriptedRng([0.1])); // Fehlschlag: 3 -> 1.8
+
+            expect(run.getScore()).toBeCloseTo(1.8);
+            expect(run.getStatus()).toBe('active');
         });
 
         it('wirft, wenn der Lauf bereits gebankt ist', () => {
             const run = new PushYourLuckRun(milestones);
             run.resolveAction(safeTier, scriptedRng([0, 0]));
-            run.resolveAction(safeTier, scriptedRng([0, 0])); // Score 10, Meilenstein 10 erreicht
+            run.resolveAction(safeTier, scriptedRng([0, 0])); // Score 10
             run.bank();
 
             expect(() => run.resolveAction(safeTier, scriptedRng([0]))).toThrow(/banked/);
@@ -129,6 +155,22 @@ describe('PushYourLuckRun', () => {
             expect(run.getScore()).toBe(30);
             expect(run.getReachedMilestones().map((m) => m.threshold)).toEqual([10, 25]);
             expect(run.getNextMilestone()).toEqual({ threshold: 50, bankable: true });
+        });
+
+        // Phase 7b: Meilenstein-Erreichung ist bewusst "sticky" (Peak-basiert,
+        // siehe Klassenkommentar in PushYourLuckEngine.ts) -- ein einmal
+        // erreichter Meilenstein bleibt erreicht, auch wenn ein spaeterer
+        // Fehlschlag den AKTUELLEN Punktestand wieder unter die Schwelle
+        // drueckt. Ohne diese Regel wuerde eine Teilstrafe denselben Effekt
+        // wie das alte harte Run-Ende auf die Banking-Berechtigung haben.
+        it('bleibt bei einem erreichten Meilenstein, auch wenn ein Fehlschlag den aktuellen Punktestand darunter drueckt', () => {
+            const run = new PushYourLuckRun(milestones);
+            run.resolveAction(safeTier, scriptedRng([0, 0]));
+            run.resolveAction(safeTier, scriptedRng([0, 0])); // Score 10, Meilenstein 10 erreicht
+            run.resolveAction(riskyTier, scriptedRng([0.1])); // Fehlschlag: Score 10 -> 6
+
+            expect(run.getScore()).toBeCloseTo(6);
+            expect(run.getReachedMilestones()).toEqual([{ threshold: 10, bankable: true }]);
         });
     });
 
@@ -171,13 +213,22 @@ describe('PushYourLuckRun', () => {
             expect(run.getStatus()).toBe('banked');
         });
 
-        it('bank() wirft nach einem Fehlschlag (busted, Score bereits 0)', () => {
+        // Ersetzt den alten Test "bank() wirft nach einem Fehlschlag (busted,
+        // Score bereits 0)" -- busted existiert nicht mehr. Neues, bewusst
+        // gegenteiliges Verhalten (Phase 7b): Banking bleibt nach einem
+        // Fehlschlag moeglich, sofern zuvor ein bankbarer Meilenstein
+        // erreicht wurde (Peak-Stickiness), sichert aber nur den
+        // TATSAECHLICHEN (durch die Teilstrafe reduzierten) Punktestand.
+        it('bank() bleibt nach einem Fehlschlag moeglich, sichert aber nur den reduzierten aktuellen Punktestand', () => {
             const run = new PushYourLuckRun(milestones);
             run.resolveAction(safeTier, scriptedRng([0, 0]));
             run.resolveAction(safeTier, scriptedRng([0, 0])); // Score 10, bankbar
-            run.resolveAction(riskyTier, scriptedRng([0])); // Fehlschlag -> busted, Score 0
+            run.resolveAction(riskyTier, scriptedRng([0.1])); // Fehlschlag: Score 10 -> 6
 
-            expect(() => run.bank()).toThrow(/Banking/);
+            expect(run.canBank()).toBe(true);
+            const banked = run.bank();
+            expect(banked).toBeCloseTo(6);
+            expect(run.getStatus()).toBe('banked');
         });
 
         it('bank() wirft bei erneutem Aufruf nach erfolgreichem Banking', () => {

@@ -8,10 +8,18 @@ function App()
 {
     const [view, setView] = useState<View>(getCurrentView);
 
+    // 'hall-reveal' feuert einmalig beim Durchbruch (TransitionScene),
+    // 'return-to-hall' bei jeder spaeteren manuellen Rueckkehr aus einem
+    // Automaten (MachineScene-Button) -- beide fuehren zur selben Hallen-
+    // Ansicht, siehe Bugfix in STATUS.md ("Rueckweg Automat->Halle nach
+    // zweitem Durchlauf").
     useEffect(() => {
-        EventBus.on('hall-reveal', () => setView('hall'));
+        const toHall = () => setView('hall');
+        EventBus.on('hall-reveal', toHall);
+        EventBus.on('return-to-hall', toHall);
         return () => {
-            EventBus.removeListener('hall-reveal');
+            EventBus.off('hall-reveal', toHall);
+            EventBus.off('return-to-hall', toHall);
         };
     }, []);
 

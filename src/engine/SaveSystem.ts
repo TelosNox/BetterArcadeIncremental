@@ -13,6 +13,7 @@ interface SerializedEngineState {
     attendantKnowledge: Record<string, number>;
     hallUpgrades: string[];
     completedMachines: string[];
+    machineUpgrades: Record<string, string[]>;
 }
 
 const DEFAULT_SAVE_KEY = 'arcade-incremental-save';
@@ -28,6 +29,9 @@ export function serializeState(state: EngineState): string {
         attendantKnowledge: { ...state.attendantKnowledge },
         hallUpgrades: [...state.hallUpgrades],
         completedMachines: [...state.completedMachines],
+        machineUpgrades: Object.fromEntries(
+            Object.entries(state.machineUpgrades).map(([machineId, upgrades]) => [machineId, [...upgrades]]),
+        ),
     };
     return JSON.stringify(serialized);
 }
@@ -59,6 +63,9 @@ export function deserializeState(json: string): EngineState {
         attendantKnowledge: { ...(parsed.attendantKnowledge ?? {}) },
         hallUpgrades: [...(parsed.hallUpgrades ?? [])],
         completedMachines: [...(parsed.completedMachines ?? [])],
+        machineUpgrades: Object.fromEntries(
+            Object.entries(parsed.machineUpgrades ?? {}).map(([machineId, upgrades]) => [machineId, [...upgrades]]),
+        ),
     };
 }
 

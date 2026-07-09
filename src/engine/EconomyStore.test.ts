@@ -52,6 +52,89 @@ describe('EconomyStore', () => {
         });
     });
 
+    describe('spendTickets', () => {
+        it('zieht bei ausreichenden Tickets DIESES Automaten ab und gibt true zurueck', () => {
+            const store = new EconomyStore();
+            store.addTickets('greed-run', 100);
+
+            const success = store.spendTickets('greed-run', 40);
+
+            expect(success).toBe(true);
+            expect(store.getTickets('greed-run').toNumber()).toBe(60);
+        });
+
+        it('gibt bei unzureichenden Tickets false zurueck ohne zu mutieren', () => {
+            const store = new EconomyStore();
+            store.addTickets('greed-run', 10);
+
+            const success = store.spendTickets('greed-run', 50);
+
+            expect(success).toBe(false);
+            expect(store.getTickets('greed-run').toNumber()).toBe(10);
+        });
+
+        it('betrifft nur die Tickets des angegebenen Automaten, nicht andere', () => {
+            const store = new EconomyStore();
+            store.addTickets('greed-run', 50);
+            store.addTickets('trap-tunnels', 50);
+
+            store.spendTickets('greed-run', 20);
+
+            expect(store.getTickets('greed-run').toNumber()).toBe(30);
+            expect(store.getTickets('trap-tunnels').toNumber()).toBe(50);
+        });
+
+        it('wirft bei negativen Betraegen', () => {
+            const store = new EconomyStore();
+
+            expect(() => store.spendTickets('greed-run', -1)).toThrow(RangeError);
+        });
+    });
+
+    describe('Automaten-interne Upgrades (Phase 7b)', () => {
+        it('purchaseMachineUpgrade kauft bei ausreichenden Tickets genau einmal', () => {
+            const store = new EconomyStore();
+            store.addTickets('greed-run', 100);
+
+            const first = store.purchaseMachineUpgrade('greed-run', 'visibility-1', 30);
+            const second = store.purchaseMachineUpgrade('greed-run', 'visibility-1', 30);
+
+            expect(first).toBe(true);
+            expect(second).toBe(false);
+            expect(store.hasMachineUpgrade('greed-run', 'visibility-1')).toBe(true);
+            expect(store.getTickets('greed-run').toNumber()).toBe(70);
+        });
+
+        it('purchaseMachineUpgrade schlaegt bei unzureichenden Tickets fehl ohne zu mutieren', () => {
+            const store = new EconomyStore();
+            store.addTickets('greed-run', 10);
+
+            const success = store.purchaseMachineUpgrade('greed-run', 'visibility-1', 30);
+
+            expect(success).toBe(false);
+            expect(store.hasMachineUpgrade('greed-run', 'visibility-1')).toBe(false);
+            expect(store.getTickets('greed-run').toNumber()).toBe(10);
+        });
+
+        it('haelt Upgrades verschiedener Automaten unabhaengig auseinander', () => {
+            const store = new EconomyStore();
+            store.addTickets('greed-run', 100);
+            store.addTickets('trap-tunnels', 100);
+
+            store.purchaseMachineUpgrade('greed-run', 'visibility-1', 30);
+
+            expect(store.hasMachineUpgrade('greed-run', 'visibility-1')).toBe(true);
+            expect(store.hasMachineUpgrade('trap-tunnels', 'visibility-1')).toBe(false);
+            expect(store.getMachineUpgrades('trap-tunnels')).toEqual([]);
+        });
+
+        it('liefert eine leere Liste fuer einen Automaten ohne gekaufte Upgrades', () => {
+            const store = new EconomyStore();
+
+            expect(store.getMachineUpgrades('unknown')).toEqual([]);
+        });
+    });
+
     describe('convertTicketsToCredits', () => {
         it('wandelt Tickets zum angegebenen Kurs in Credits um und setzt Tickets zurueck', () => {
             const store = new EconomyStore();

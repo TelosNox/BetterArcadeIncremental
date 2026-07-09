@@ -45,6 +45,7 @@ function stateWithSomeData(): EngineState {
         attendantKnowledge: { 'greed-run': 0.75 },
         hallUpgrades: ['faster-conversion'],
         completedMachines: ['greed-run'],
+        machineUpgrades: { 'greed-run': ['visibility-1'] },
     };
 }
 
@@ -61,6 +62,7 @@ describe('serializeState / deserializeState', () => {
         expect(restored.attendantKnowledge).toEqual(original.attendantKnowledge);
         expect(restored.hallUpgrades).toEqual(original.hallUpgrades);
         expect(restored.completedMachines).toEqual(original.completedMachines);
+        expect(restored.machineUpgrades).toEqual(original.machineUpgrades);
     });
 
     it('erhaelt Zahlen jenseits von Number.MAX_SAFE_INTEGER ueber den Round-Trip', () => {

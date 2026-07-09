@@ -2,33 +2,45 @@ import { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
 import { PatternEngine } from '../../engine/PatternEngine';
 import { PushYourLuckRun } from '../../engine/PushYourLuckEngine';
-import type { MachineConfig, RiskTier } from '../../engine/types';
-import { getEffectiveFailureChance, getMachineConfig } from '../../data/machines.config';
-import { chooseAttendantTier, gainKnowledgeFromManualPlay, getAttendantTier } from '../../engine/AttendantEngine';
+import type { MachineAction, MachineConfig } from '../../engine/types';
+import {
+    getEntryPointMachine,
+    getHardActions,
+    getIntermediateActions,
+    getMachineConfig,
+    getVisibleMoveCount,
+    resolveMachineAction,
+} from '../../data/machines.config';
+import {
+    chooseAttendantAction,
+    gainKnowledgeFromManualPlay,
+    getAttendantLookahead,
+    getAttendantResolvedAction,
+} from '../../engine/AttendantEngine';
 import { economyStore, persist } from '../economy';
 import { getCurrentView } from '../viewState';
 
 // EINE generische Szene fuer alle vier Automaten (CLAUDE.md Workflow-Regel).
 // Liest ausschliesslich machines.config.ts; automatenspezifische Werte
-// (Thema, Pattern, Payouts, Meilensteine) kommen nie hart kodiert vor.
-// Nur Phaser-Graphics-Primitive als Platzhalter (kein Grafik-/Sound-Asset)
-// bis einschliesslich Phase 8.
+// (Thema, Pattern, Payouts, Meilensteine, Aktionen) kommen nie hart kodiert
+// vor. Nur Phaser-Graphics-Primitive als Platzhalter (kein Grafik-/
+// Sound-Asset) bis einschliesslich Phase 8.
 //
-// Rundenstruktur exakt nach game-spec.md 4.1:
-//   Planung (Risiko-Tokens queuen) -> Ausfuehrung (automatisch/animiert)
-//   -> Ergebnis mit Kausalitaets-Feedback -> Meilenstein-Entscheidung
-//   (Banking vs. Weitermachen) -> Abschluss beim letzten Checkpoint.
+// Rundenstruktur nach game-spec.md 4.1/4.1a (Phase 7b, Kernmechanik-
+// Revision, siehe STATUS.md):
+//   Planung (Aktionen queuen, gegen eine FESTE, vorab generierte
+//   Zug-Sequenz) -> Ausfuehrung (automatisch/animiert) -> Ergebnis mit
+//   Kausalitaets-Feedback -> Meilenstein-Entscheidung (Banking vs.
+//   Weitermachen) -> Abschluss beim letzten Checkpoint.
 //
-// PatternEngine (Musterzustand/Prognose) und PushYourLuckEngine (Erfolg/
-// Fehlschlag/Score) bleiben unveraendert und unabhaengig voneinander
-// (Architektur-Kurzregel CLAUDE.md). Die Verzahnung passiert ausschliesslich
-// hier: getEffectiveFailureChance() (machines.config.ts) berechnet aus dem
-// gesampelten Musterzustand + der Basis-RiskTier eine effektive
-// failureChance, mit der resolveAction() aufgerufen wird -- die Prognose
-// hat dadurch echten strategischen Wert statt nur Deko zu sein (siehe
-// STATUS.md, aufgeloester Blocker "Phase 3 Spec-Abweichung").
+// Die komplette Zug-Sequenz eines Laufs steht ab Run-Start fest (`sequence`,
+// per PatternEngine.sampleNext() erzeugt und danach nie mehr veraendert --
+// nur lazy um weitere Eintraege verlaengert, sobald sie gebraucht werden).
+// PatternEngine/PushYourLuckEngine bleiben unveraendert und unabhaengig
+// voneinander (Architektur-Kurzregel CLAUDE.md); die Verzahnung passiert
+// ausschliesslich hier ueber machines.config.ts::resolveMachineAction().
 
-type Phase = 'planning' | 'executing' | 'busted' | 'milestone' | 'completed';
+type Phase = 'planning' | 'executing' | 'milestone' | 'completed';
 type ViewChangedPayload = { view: 'machine' | 'hall' };
 
 const MAX_QUEUE_LENGTH = 6;
@@ -46,12 +58,17 @@ export class MachineScene extends Scene {
     private config!: MachineConfig;
     private patternEngine!: PatternEngine;
     private run!: PushYourLuckRun;
-    private patternState!: string;
-    // Feste Sichtbarkeits-Stufe: Upgrades zum Aufdecken weiterer Prognose
-    // werden erst als Hallen-Upgrade in Phase 7 kaufbar.
-    private readonly upgradeLevel = 0;
+    // Die feste, vorab generierte Zug-Sequenz dieses Laufs (Phase 7b) --
+    // einmal generierte Eintraege werden NIE veraendert, das Array waechst
+    // nur lazy (ensureSequenceLength), sobald eine weitere Position
+    // gebraucht wird (Vorschau oder Ausfuehrung).
+    private sequence: string[] = [];
+    // Position in `sequence`, die als naechstes ausgefuehrt wird -- ruekt
+    // nach jeder abgeschlossenen Ausfuehrungsrunde um die Anzahl
+    // ausgefuehrter Schritte vor.
+    private sequenceCursor = 0;
     private phase: Phase = 'planning';
-    private queue: RiskTier[] = [];
+    private queue: MachineAction[] = [];
     private feedback = '';
     // true nur, waehrend der Spieler in der Halle ist (App.tsx emittiert
     // 'view-changed'), siehe tickAttendant().
@@ -102,6 +119,7 @@ export class MachineScene extends Scene {
 
         this.forecastText = this.add.text(900, 130, '', {
             fontFamily: 'Arial', fontSize: 13, color: '#cccccc', align: 'left',
+            wordWrap: { width: 220 },
         }).setOrigin(0.5, 0);
 
         this.feedbackText = this.add.text(512, 190, '', {
@@ -109,7 +127,7 @@ export class MachineScene extends Scene {
             wordWrap: { width: 720 },
         }).setOrigin(0.5, 0);
 
-        this.queueText = this.add.text(512, 320, '', {
+        this.queueText = this.add.text(512, 270, '', {
             fontFamily: 'Arial', fontSize: 16, color: '#88ccff', align: 'center',
         }).setOrigin(0.5);
 
@@ -161,10 +179,34 @@ export class MachineScene extends Scene {
 
     private startNewRun(): void {
         this.run = new PushYourLuckRun(this.config.milestones);
-        this.patternState = this.config.pattern.states[0];
+        this.sequence = [];
+        this.sequenceCursor = 0;
         this.queue = [];
         this.phase = 'planning';
         this.feedback = '';
+    }
+
+    // Verlaengert die feste Zug-Sequenz lazy, bis Position `length - 1`
+    // existiert -- bereits generierte Eintraege werden NIE veraendert
+    // (Phase 7b: "Fixes Pattern pro Run"). Der erste Eintrag wird als
+    // Uebergang vom Referenz-Startzustand (pattern.states[0], Danger-Achse-
+    // Konvention aus Phase 3) generiert, jeder weitere als Uebergang vom
+    // jeweils vorherigen -- identisch zur alten Live-Sampling-Kette, nur
+    // vorab und eingefroren statt live pro Ausfuehrungsschritt.
+    private ensureSequenceLength(length: number): void {
+        while (this.sequence.length < length) {
+            const previous =
+                this.sequence.length > 0 ? this.sequence[this.sequence.length - 1] : this.config.pattern.states[0];
+            this.sequence.push(this.patternEngine.sampleNext(previous));
+        }
+    }
+
+    private getUpgradeLevel(): number {
+        return economyStore.getMachineUpgrades(this.config.id).length;
+    }
+
+    private getVisibleCount(): number {
+        return getVisibleMoveCount(this.patternEngine.getVisibility(this.getUpgradeLevel()));
     }
 
     private clearDynamic(): void {
@@ -187,7 +229,7 @@ export class MachineScene extends Scene {
             .setInteractive({ useHandCursor: true });
         const text = this.add
             .text(x, y, label, {
-                fontFamily: 'Arial', fontSize: 14, color: '#ffffff', align: 'center',
+                fontFamily: 'Arial', fontSize: 13, color: '#ffffff', align: 'center',
                 wordWrap: { width: width - 10 },
             })
             .setOrigin(0.5);
@@ -197,81 +239,99 @@ export class MachineScene extends Scene {
         this.dynamicObjects.push(bg, text);
     }
 
-    private updatePatternDisplay(): void {
-        const states = this.patternEngine.getStates();
-        const colorIndex = states.indexOf(this.patternState);
-        this.patternCircle.setFillStyle(STATE_COLORS[Math.max(0, colorIndex) % STATE_COLORS.length]);
-        this.patternLabel.setText(`Muster:\n${this.patternState}`);
+    // Aktualisiert die Vorschau der festen Sequenz: der unmittelbar
+    // naechste Zug ist IMMER sichtbar (getVisibleMoveCount liefert
+    // mindestens 1), weitere Zuege je nach Sichtbarkeits-Fenster
+    // (automaten-interne Upgrades, siehe machines.config.ts). Zeigt bis zu
+    // MAX_QUEUE_LENGTH Positionen, unsichtbare als "??".
+    private updateSequencePreview(): void {
+        const visibleCount = this.getVisibleCount();
+        this.ensureSequenceLength(this.sequenceCursor + Math.max(visibleCount, MAX_QUEUE_LENGTH));
 
-        const visible = this.patternEngine.getVisibleDistribution(this.patternState, this.upgradeLevel);
-        const lines = visible.map((entry) =>
-            entry.revealed ? `${entry.to}: ${Math.round(entry.probability * 100)}%` : `${entry.to}: ??`,
-        );
-        this.forecastText.setText(['Prognose (naechster Schritt):', ...lines].join('\n'));
+        const nextState = this.sequence[this.sequenceCursor];
+        const states = this.patternEngine.getStates();
+        const colorIndex = states.indexOf(nextState);
+        this.patternCircle.setFillStyle(STATE_COLORS[Math.max(0, colorIndex) % STATE_COLORS.length]);
+        this.patternLabel.setText(`Naechster Zug:\n${nextState}`);
+
+        const lines: string[] = [];
+        for (let i = 0; i < MAX_QUEUE_LENGTH; i += 1) {
+            lines.push(i < visibleCount ? this.sequence[this.sequenceCursor + i] : '??');
+        }
+        this.forecastText.setText(['Feste Sequenz (naechste Zuege):', lines.join(' -> ')].join('\n'));
     }
 
     private renderPhase(): void {
         this.clearDynamic();
         this.scoreText.setText(`Punkte: ${this.run.getScore().toFixed(1)}`);
-        this.updatePatternDisplay();
+        this.updateSequencePreview();
         this.updateAttendantStatusText();
+        this.renderBackToHallButton();
         this.feedbackText.setText(this.feedback);
         this.queueText.setText(
-            this.queue.length > 0 ? `Plan: ${this.queue.map((tier) => tier.id).join(' -> ')}` : 'Plan: (leer)',
+            this.queue.length > 0 ? `Plan: ${this.queue.map((action) => action.id).join(' -> ')}` : 'Plan: (leer)',
         );
 
         if (this.phase === 'planning') {
-            this.renderTierButtons();
+            this.renderActionButtons();
             this.renderPlanningControls();
+            this.renderInternalUpgradeShop();
         } else if (this.phase === 'milestone') {
             this.renderMilestoneControls();
-        } else if (this.phase === 'busted') {
-            this.renderBustedControls();
         } else if (this.phase === 'completed') {
             this.renderCompletedControls();
         }
         // 'executing': bewusst keine interaktiven Elemente (kein Reflex-Input, game-spec.md 4.1)
     }
 
-    // Effektive, musterzustandsabhaengige Fangchance fuer den JETZT aktuellen
-    // Musterzustand -- gilt garantiert nur fuer den naechsten ausgefuehrten
-    // Schritt (das Muster kann sich waehrend der Ausfuehrung weiterbewegen,
-    // siehe game-spec.md 4.2: nur der naechste Schritt ist vorhersagbar).
-    private describeTier(tier: RiskTier): string {
-        const effective = getEffectiveFailureChance(tier, this.patternEngine.getStates(), this.patternState);
-        const effectivePct = Math.round(effective * 100);
+    // Beschreibt eine Aktion fuer die Buttons in der Planungsphase. Bei
+    // Zwischenstufen genuegt die feste, musterunabhaengige Fangchance. Bei
+    // harten Aktionen wird zusaetzlich geprueft, ob die Position, an der die
+    // Aktion (wenn jetzt gequeued) tatsaechlich ausgefuehrt wuerde, bereits
+    // sichtbar ist -- wenn ja, wird konkret angezeigt, ob sie dort TRIFFT
+    // oder SCHEITERT. Das macht die Vorschau zu einer echten strategischen
+    // Entscheidung statt Deko (design-toolbox.md 1.10/1.11).
+    private describeAction(action: MachineAction): string {
+        if (action.kind === 'intermediate') {
+            const pct = Math.round(action.failureChance * 100);
+            return `Fangchance ${pct}% (musterunabhängig)`;
+        }
 
-        if (tier.failureChance <= 0) {
-            return `Fangchance ${effectivePct}% (musterunabhängig)`;
+        const position = this.sequenceCursor + this.queue.length;
+        const visibleCount = this.getVisibleCount();
+        const isVisible = position - this.sequenceCursor < visibleCount;
+        if (!isVisible) {
+            return `Scheitert nur bei "${action.counterState}" (Zug an dieser Position noch nicht sichtbar)`;
         }
-        const basePct = Math.round(tier.failureChance * 100);
-        if (effectivePct === basePct) {
-            return `Fangchance ${effectivePct}% (Basis, Muster "${this.patternState}" neutral)`;
-        }
-        return `Fangchance ${effectivePct}% (Basis ${basePct}%, Muster "${this.patternState}")`;
+        this.ensureSequenceLength(position + 1);
+        const upcomingState = this.sequence[position];
+        const willFail = upcomingState === action.counterState;
+        return `Scheitert nur bei "${action.counterState}" – naechster Zug hier: "${upcomingState}" -> ${willFail ? 'SCHEITERT' : 'TRIFFT'}`;
     }
 
-    private renderTierButtons(): void {
-        const tiers = this.config.riskTiers;
-        const startX = 512 - ((tiers.length - 1) * 300) / 2;
+    private queueAction(action: MachineAction): void {
+        if (this.queue.length >= MAX_QUEUE_LENGTH) return;
+        this.queue.push(action);
+        this.renderPhase();
+    }
+
+    private renderActionButtons(): void {
+        const hardActions = getHardActions(this.config);
+        const intermediateActions = getIntermediateActions(this.config);
         const canAdd = this.queue.length < MAX_QUEUE_LENGTH;
 
-        tiers.forEach((tier, index) => {
-            const x = startX + index * 300;
-            const label = `${tier.id}\nPayout ${tier.payoutRange[0]}-${tier.payoutRange[1]}\n${this.describeTier(tier)}`;
-            this.makeButton(
-                x,
-                420,
-                280,
-                90,
-                label,
-                () => {
-                    if (this.queue.length >= MAX_QUEUE_LENGTH) return;
-                    this.queue.push(tier);
-                    this.renderPhase();
-                },
-                canAdd ? 0x2c3e50 : 0x444444,
-            );
+        const hardStartX = 512 - ((hardActions.length - 1) * 340) / 2;
+        hardActions.forEach((action, index) => {
+            const x = hardStartX + index * 340;
+            const label = `${action.id}\nPayout ${action.payoutRange[0]}-${action.payoutRange[1]}\n${this.describeAction(action)}`;
+            this.makeButton(x, 340, 320, 100, label, () => this.queueAction(action), canAdd ? 0x2c3e50 : 0x444444);
+        });
+
+        const interStartX = 512 - ((intermediateActions.length - 1) * 260) / 2;
+        intermediateActions.forEach((action, index) => {
+            const x = interStartX + index * 260;
+            const label = `${action.id}\nPayout ${action.payoutRange[0]}-${action.payoutRange[1]}\n${this.describeAction(action)}`;
+            this.makeButton(x, 450, 240, 80, label, () => this.queueAction(action), canAdd ? 0x34495e : 0x444444);
         });
     }
 
@@ -296,6 +356,38 @@ export class MachineScene extends Scene {
         );
     }
 
+    // Kaufoberflaeche fuer automaten-interne Upgrades (Phase 7b) -- bezahlt
+    // mit den EIGENEN Tickets dieses Automaten, NICHT mit Hallen-Credits.
+    // Bewusst NICHT im hallenweiten UpgradePanel.tsx (das bleibt exklusiv
+    // fuer Credits-Upgrades, siehe STATUS.md/CLAUDE.md).
+    private renderInternalUpgradeShop(): void {
+        const owned = economyStore.getMachineUpgrades(this.config.id);
+        const available = this.config.upgrades.filter((upgrade) => !owned.includes(upgrade.id));
+        if (available.length === 0) return;
+
+        const tickets = economyStore.getTickets(this.config.id).toNumber();
+        const startX = 512 - ((available.length - 1) * 260) / 2;
+        available.forEach((upgrade, index) => {
+            const x = startX + index * 260;
+            const canAfford = tickets >= upgrade.cost;
+            const label = `${upgrade.name}\n${upgrade.description}\nKosten: ${upgrade.cost} Tickets (${tickets.toFixed(1)} vorhanden)`;
+            this.makeButton(
+                x,
+                630,
+                240,
+                100,
+                label,
+                () => {
+                    if (economyStore.purchaseMachineUpgrade(this.config.id, upgrade.id, upgrade.cost)) {
+                        persist();
+                        this.renderPhase();
+                    }
+                },
+                canAfford ? 0x8e44ad : 0x444444,
+            );
+        });
+    }
+
     private executeQueue(): void {
         this.phase = 'executing';
         this.feedback = '';
@@ -311,48 +403,34 @@ export class MachineScene extends Scene {
     }
 
     private runQueueStep(index: number, isAttendant: boolean): void {
-        if (index >= this.queue.length || this.run.getStatus() !== 'active') {
+        if (index >= this.queue.length) {
             this.finishExecution(isAttendant);
             return;
         }
 
-        const tier = this.queue[index];
-        // Muster zuerst einen Schritt weiterbewegen (das ist die "Position
-        // der Patrouille" fuer diesen Schritt), DANACH die daraus folgende
-        // effektive failureChance berechnen und erst damit resolveAction
-        // aufrufen -- so wirkt der (teilweise vorhersagbare) Musterzustand
-        // tatsaechlich auf das Ergebnis, statt nur im Feedback-Text zu
-        // stehen (siehe STATUS.md, aufgeloester Blocker).
-        this.patternState = this.patternEngine.sampleNext(this.patternState);
-        const patternFailureChance = getEffectiveFailureChance(
-            tier,
-            this.patternEngine.getStates(),
-            this.patternState,
-        );
+        const action = this.queue[index];
+        const position = this.sequenceCursor + index;
+        this.ensureSequenceLength(position + 1);
+        const state = this.sequence[position];
 
-        let resolvedTier: RiskTier;
-        if (isAttendant) {
-            const knowledge = economyStore.getAttendantKnowledge(this.config.id);
-            resolvedTier = getAttendantTier(tier, knowledge, patternFailureChance);
-        } else {
-            resolvedTier = { ...tier, failureChance: patternFailureChance };
+        const resolved = resolveMachineAction(action, state);
+        const knowledge = economyStore.getAttendantKnowledge(this.config.id);
+        const executed = isAttendant ? getAttendantResolvedAction(resolved, knowledge) : resolved;
+        if (!isAttendant) {
             // Musterkenntnis steigt primaer durch manuelles Spielen
             // (game-spec.md 3.2) -- jede manuell aufgeloeste Aktion zaehlt,
             // unabhaengig von Erfolg/Fehlschlag.
-            const knowledge = economyStore.getAttendantKnowledge(this.config.id);
             economyStore.setAttendantKnowledge(this.config.id, gainKnowledgeFromManualPlay(knowledge));
         }
-        const result = this.run.resolveAction(resolvedTier);
 
-        this.updatePatternDisplay();
+        const result = this.run.resolveAction(executed);
         this.scoreText.setText(`Punkte: ${this.run.getScore().toFixed(1)}`);
 
         const prefix = isAttendant ? '[Attendant] ' : '';
-        const effectivePct = Math.round(resolvedTier.failureChance * 100);
         if (result.success) {
-            this.feedback = `${prefix}Schritt ${index + 1}: Erfolg mit "${tier.id}" (+${result.payout.toFixed(1)} Punkte, Fangchance war ${effectivePct}% bei Muster "${this.patternState}").`;
+            this.feedback = `${prefix}Schritt ${index + 1}: Erfolg mit "${action.id}" bei Musterzustand "${state}" (+${result.payout.toFixed(1)} Punkte).`;
         } else {
-            this.feedback = `${prefix}Schritt ${index + 1}: Fehlschlag bei "${tier.id}" (Fangchance ${effectivePct}% – Muster stand auf "${this.patternState}") – der Zug kam zu früh. Punktestand auf 0 zurückgesetzt.`;
+            this.feedback = `${prefix}Schritt ${index + 1}: Fehlschlag mit "${action.id}" bei Musterzustand "${state}" (-${result.penalty.toFixed(1)} Punkte Teilstrafe, Punktestand jetzt ${result.scoreAfter.toFixed(1)}).`;
         }
         this.feedbackText.setText(this.feedback);
 
@@ -360,16 +438,9 @@ export class MachineScene extends Scene {
     }
 
     private finishExecution(isAttendant: boolean): void {
+        const executedSteps = this.queue.length;
         this.queue = [];
-
-        if (this.run.getStatus() === 'busted') {
-            this.phase = 'busted';
-            if (isAttendant) {
-                this.startNewRun();
-            }
-            this.renderPhase();
-            return;
-        }
+        this.sequenceCursor += executedSteps;
 
         const isFinal = this.run.getReachedMilestones().length >= this.config.milestones.length;
         const isFirstCompletion = isFinal && !economyStore.isMachineCompleted(this.config.id);
@@ -412,31 +483,43 @@ export class MachineScene extends Scene {
         this.renderPhase();
     }
 
+    // Baut die Attendant-Queue fuer eine automatisierte Runde: pro Position
+    // wird geprueft, ob der eigene Lookahead (Musterkenntnis-abhaengig,
+    // siehe AttendantEngine.getAttendantLookahead) den an dieser Position
+    // feststehenden Zustand bereits kennt -- wenn ja, waehlt
+    // chooseAttendantAction garantiert eine dort nicht scheiternde harte
+    // Aktion, sonst faellt sie auf eine Zwischenstufe zurueck.
+    private buildAttendantQueue(): MachineAction[] {
+        const knowledge = economyStore.getAttendantKnowledge(this.config.id);
+        const lookahead = getAttendantLookahead(this.getVisibleCount(), knowledge);
+        this.ensureSequenceLength(this.sequenceCursor + ATTENDANT_QUEUE_LENGTH);
+
+        const hardActions = getHardActions(this.config);
+        const intermediateActions = getIntermediateActions(this.config);
+
+        return Array.from({ length: ATTENDANT_QUEUE_LENGTH }, (_, i) => {
+            const knownState = i < lookahead ? this.sequence[this.sequenceCursor + i] : undefined;
+            return chooseAttendantAction(hardActions, intermediateActions, knownState, knowledge);
+        });
+    }
+
     // Startet -- ausschliesslich waehrend der Spieler in der Halle ist
     // (attendantTicking) und der Attendant fuer diesen Automaten
     // freigeschaltet ist (game-spec.md 3.2: freischaltbar nach erstmaligem
     // Durchspielen) -- automatisiert eine neue Runde, oder loest eine vom
-    // Spieler offen gelassene Meilenstein-/Bust-Entscheidung sicher auf,
-    // damit der Automat nicht einfach haengen bleibt, waehrend niemand
-    // zusieht.
+    // Spieler offen gelassene Meilenstein-Entscheidung sicher auf, damit der
+    // Automat nicht einfach haengen bleibt, waehrend niemand zusieht.
     private tickAttendant(): void {
         if (!this.attendantTicking) return;
         if (!economyStore.isMachineCompleted(this.config.id)) return;
         if (this.phase === 'executing') return;
 
-        if (this.phase === 'busted') {
-            this.startNewRun();
-            this.renderPhase();
-            return;
-        }
         if (this.phase === 'milestone' || this.phase === 'completed') {
             this.bankRun();
             return;
         }
         if (this.phase === 'planning' && this.queue.length === 0) {
-            const knowledge = economyStore.getAttendantKnowledge(this.config.id);
-            const chosenTier = chooseAttendantTier(this.config.riskTiers, knowledge);
-            this.queue = Array.from({ length: ATTENDANT_QUEUE_LENGTH }, () => chosenTier);
+            this.queue = this.buildAttendantQueue();
             this.executeAttendantQueue();
         }
     }
@@ -449,6 +532,22 @@ export class MachineScene extends Scene {
         const knowledgePct = Math.round(economyStore.getAttendantKnowledge(this.config.id) * 100);
         const status = this.attendantTicking ? 'aktiv (Spieler in der Halle)' : 'pausiert (Spieler am Automaten)';
         this.attendantStatusText.setText(`Attendant: ${status} – Musterkenntnis ${knowledgePct}%`);
+    }
+
+    // Manuelle Rueckkehr zur Halle (Bugfix, siehe STATUS.md): bis hierhin gab
+    // es KEINEN Weg zurueck ausser dem einmaligen automatischen Reveal des
+    // entryPoint-Automaten (TransitionScene) -- ein zweiter Durchlauf
+    // (Score-Attack) endete daher in einer Sackgasse, nur ein Seiten-Reload
+    // half. Der Button emittiert dasselbe Signal wie der Reveal ('return-to-
+    // hall' statt 'hall-reveal', App.tsx behandelt beide gleich), aendert
+    // aber NICHT die laufende Phaser-Szene -- der Automat laeuft im
+    // Hintergrund weiter (Phase 5), exakt wie beim Reveal-Uebergang.
+    // Nur sichtbar, sobald die Halle ueberhaupt existiert (entryPoint bereits
+    // durchgespielt), sonst wuerde game-spec.md Abschnitt 2 verletzt ("keine
+    // sichtbare Meta-UI" vor dem Durchbruch).
+    private renderBackToHallButton(): void {
+        if (!economyStore.isMachineCompleted(getEntryPointMachine().id)) return;
+        this.makeButton(100, 24, 160, 40, 'Zur Halle', () => EventBus.emit('return-to-hall'), 0x34495e);
     }
 
     private bankRun(): void {
@@ -467,16 +566,6 @@ export class MachineScene extends Scene {
         this.makeButton(512 - 160, 460, 260, 70, 'Sichern (Banking)', () => this.bankRun(), 0x27ae60);
         this.makeButton(512 + 160, 460, 260, 70, 'Weitermachen', () => {
             this.phase = 'planning';
-            this.renderPhase();
-        }, 0xc0392b);
-    }
-
-    private renderBustedControls(): void {
-        this.feedback = this.feedback || 'Lauf gescheitert – Punktestand verloren.';
-        this.feedbackText.setText(this.feedback);
-
-        this.makeButton(512, 460, 260, 70, 'Neuer Versuch', () => {
-            this.startNewRun();
             this.renderPhase();
         }, 0xc0392b);
     }
