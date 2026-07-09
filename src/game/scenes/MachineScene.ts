@@ -2,7 +2,7 @@ import { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
 import { PatternEngine } from '../../engine/PatternEngine';
 import { drawPayout } from '../../engine/PushYourLuckEngine';
-import type { MachineAction, MachineConfig, MachineUpgradeDef } from '../../engine/types';
+import type { CyclicMachineConfig, MachineAction, MachineUpgradeDef } from '../../engine/types';
 import {
     MAX_PRECISION,
     N_STATES,
@@ -23,6 +23,8 @@ import {
 import { gainKnowledgeFromManualPlay } from '../../engine/AttendantEngine';
 import { getTicketYieldRate } from '../../data/hall.config';
 import { economyStore, persist } from '../economy';
+import { getSceneKeyForMachine } from '../sceneRouting';
+import { createMilestonePips, updateMilestonePips } from './milestonePips';
 
 // EINE generische Szene fuer alle vier Automaten (CLAUDE.md Workflow-Regel).
 // Liest ausschliesslich machines.config.ts; automatenspezifische Werte
@@ -82,7 +84,7 @@ function pentagonPoint(cx: number, cy: number, radius: number, index: number, co
 }
 
 export class MachineScene extends Scene {
-    private config!: MachineConfig;
+    private config!: CyclicMachineConfig;
     private patternEngine!: PatternEngine;
     // Die feste Zug-Sequenz -- einmal generierte Eintraege werden NIE
     // veraendert, das Array waechst nur lazy (ensureSequenceLength).
@@ -119,6 +121,14 @@ export class MachineScene extends Scene {
         if (!config) {
             throw new Error(`MachineScene: unbekannte machineId "${data.machineId}"`);
         }
+        // Phase 7f: Greed Run hat eine eigene Szene (GreedRunScene.ts) und
+        // landet ueber sceneRouting.ts nie hier -- dieser Check ist eine
+        // defensive Absicherung gegen falsches Routing, kein erwarteter Pfad.
+        if (config.kind !== 'cyclic') {
+            throw new Error(
+                `MachineScene: Automat "${data.machineId}" ist kein zyklischer Automat (kind="${config.kind}") -- gehoert in eine eigene Szene, siehe sceneRouting.ts`,
+            );
+        }
         this.config = config;
         this.patternEngine = new PatternEngine(config.pattern);
         this.sequence = [];
@@ -144,7 +154,7 @@ export class MachineScene extends Scene {
             fontFamily: 'Arial', fontSize: 20, color: '#ffe066',
         }).setOrigin(0.5);
 
-        this.createMilestonePips();
+        this.milestonePips = createMilestonePips(this, this.config, 512, 82);
 
         this.feedbackText = this.add.text(512, 106, '', {
             fontFamily: 'Arial', fontSize: 15, color: '#ffffff', align: 'center',
@@ -179,7 +189,7 @@ export class MachineScene extends Scene {
         // eine bereits laufende Szene angewendet wird. Listener wird beim
         // Szenenwechsel wieder entfernt.
         const handleRequestMachine = ({ machineId }: { machineId: string }) => {
-            this.scene.start('Machine', { machineId });
+            this.scene.start(getSceneKeyForMachine(machineId), { machineId });
         };
         EventBus.on('request-machine', handleRequestMachine);
         this.events.once('shutdown', () => EventBus.off('request-machine', handleRequestMachine));
@@ -261,36 +271,6 @@ export class MachineScene extends Scene {
         bg.on('pointerover', () => bg.setFillStyle(color, 0.8));
         bg.on('pointerout', () => bg.setFillStyle(color, 1));
         this.dynamicObjects.push(bg, text);
-    }
-
-    // --- Meilenstein-Pips (Phase 7e) ---------------------------------------
-
-    // Ein Pip pro Meilenstein-Schwelle, EINMAL erzeugt (persistent, kein
-    // Neuaufbau pro Render). Letzter Pip = Raute (45°-gedrehtes Quadrat)
-    // statt Kreis -- eine andere FORM markiert "Durchgespielt" distinkt,
-    // nicht nur eine andere Farbe (CLAUDE.md-Barrierefreiheits-Grundsatz).
-    // Exakte Schwellenwerte werden bewusst NICHT angezeigt (design-toolbox.md
-    // 1.13, Opt-in-Tiefe: einfaches qualitatives Signal per Default).
-    private createMilestonePips(): void {
-        const count = this.config.milestones.length;
-        const spacing = 26;
-        const startX = 512 - ((count - 1) * spacing) / 2;
-        for (let i = 0; i < count; i += 1) {
-            const x = startX + i * spacing;
-            const isFinal = i === count - 1;
-            const pip = isFinal
-                ? this.add.rectangle(x, 82, 15, 15, 0x444444).setAngle(45).setStrokeStyle(1, 0xffffff)
-                : this.add.circle(x, 82, 8, 0x444444).setStrokeStyle(1, 0xffffff);
-            this.milestonePips.push(pip);
-        }
-    }
-
-    private updateMilestonePips(): void {
-        const peak = economyStore.getMachinePeakScore(this.config.id).toNumber();
-        const reachedCount = getReachedMilestones(this.config, peak).length;
-        this.milestonePips.forEach((pip, i) => {
-            pip.setFillStyle(i < reachedCount ? 0xffe066 : 0x444444);
-        });
     }
 
     // --- Statische Referenz-Grafik (Phase 7e, game-spec.md 4.1c) ----------
@@ -405,10 +385,15 @@ export class MachineScene extends Scene {
         }
     }
 
+    private refreshMilestonePips(): void {
+        const peak = economyStore.getMachinePeakScore(this.config.id).toNumber();
+        updateMilestonePips(this.milestonePips, this.config, peak);
+    }
+
     private renderPhase(): void {
         this.clearDynamic();
         this.scoreText.setText(`Punkte: ${economyStore.getMachinePoints(this.config.id).toNumber().toFixed(1)}`);
-        this.updateMilestonePips();
+        this.refreshMilestonePips();
         this.renderPreviewChips();
         this.updateAttendantStatusText();
         this.renderBackToHallButton();
@@ -552,7 +537,7 @@ export class MachineScene extends Scene {
         economyStore.applyMachineScoreDelta(this.config.id, payout);
         const scoreAfter = economyStore.getMachinePoints(this.config.id).toNumber();
         this.scoreText.setText(`Punkte: ${scoreAfter.toFixed(1)}`);
-        this.updateMilestonePips();
+        this.refreshMilestonePips();
 
         // Zweite, ebenfalls sofortige Ausschuettung (game-spec.md 3.1, Phase
         // 7d): jede Aktion erzeugt gleichzeitig hallenweite Tickets,

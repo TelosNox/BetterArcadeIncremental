@@ -1,6 +1,7 @@
 import { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
 import { getEntryPointMachine } from '../../data/machines.config';
+import { getSceneKeyForMachine } from '../sceneRouting';
 
 // Durchbruch-Sequenz Layer 0 -> Layer 1 (game-spec.md Abschnitt 2). Wird
 // GENAU EINMAL ausgeloest, beim erstmaligen Durchspielen des entryPoint-
@@ -50,6 +51,7 @@ export class TransitionScene extends Scene {
         // Automatisierung); die Halle wird als React-Overlay ueber dem
         // Phaser-Canvas angezeigt (App.tsx hoert auf 'hall-reveal').
         EventBus.emit('hall-reveal');
-        this.scene.start('Machine', { machineId: getEntryPointMachine().id });
+        const entryPointId = getEntryPointMachine().id;
+        this.scene.start(getSceneKeyForMachine(entryPointId), { machineId: entryPointId });
     }
 }
