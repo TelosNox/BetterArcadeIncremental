@@ -4,33 +4,29 @@ import {
     MANUAL_KNOWLEDGE_GAIN,
     TRAINING_KNOWLEDGE_GAIN,
     chooseAttendantAction,
-    chooseAttendantIntermediateTier,
     gainKnowledgeFromManualPlay,
     gainKnowledgeFromTraining,
     getAttendantEfficiency,
     getAttendantLookahead,
+    getAttendantPrecision,
     getAttendantResolvedAction,
 } from './AttendantEngine';
-import type { HardActionDef, IntermediateActionDef, ResolvedAction } from './types';
+import type { CyclicActionDef, ResolvedAction } from './types';
 
-const safe: IntermediateActionDef = { kind: 'intermediate', id: 'safe', payoutRange: [3, 3], failureChance: 0 };
-const balanced: IntermediateActionDef = {
-    kind: 'intermediate',
-    id: 'balanced',
-    payoutRange: [6, 10],
-    failureChance: 0.15,
-};
-const risky: IntermediateActionDef = {
-    kind: 'intermediate',
-    id: 'risky',
-    payoutRange: [14, 22],
-    failureChance: 0.35,
-};
-const tiers = [safe, balanced, risky];
-
-const hardA: HardActionDef = { kind: 'hard', id: 'blitzlauf', payoutRange: [12, 19], counterState: 'alarm' };
-const hardB: HardActionDef = { kind: 'hard', id: 'schleichgang', payoutRange: [15, 23], counterState: 'nah' };
-const hardActions = [hardA, hardB];
+// Handgebaute Fixture statt Import aus src/data/machines.config.ts -- die
+// Engine-Tests bleiben damit unabhaengig von der konkreten Automaten-
+// Konfiguration (wie schon vor Phase 7c). 5 Zustaende/Aktionen im selben
+// Zyklus wie "Greed Run" (machines.config.ts), aber hier bewusst eigenstaendig
+// definiert: actions[i] gewinnt bei states[i+1], verliert bei states[i-1].
+const states = ['fern', 'nah', 'alarm', 'sichtkontakt', 'rueckzug'];
+const payouts = { payoutBig: [16, 22] as [number, number], payoutSimple: [5, 8] as [number, number], payoutLoss: [-10, -7] as [number, number] };
+const actions: CyclicActionDef[] = ['sprint', 'schleicher', 'ablenker', 'versteck', 'vorstoss'].map((id, i) => ({
+    id,
+    counterState: states[(i + 1) % states.length],
+    losesToState: states[(i - 1 + states.length) % states.length],
+    ...payouts,
+}));
+// actions[0] = sprint: win 'nah', loss 'rueckzug'
 
 describe('AttendantEngine', () => {
     describe('getAttendantEfficiency', () => {
@@ -59,11 +55,11 @@ describe('AttendantEngine', () => {
     });
 
     describe('getAttendantLookahead', () => {
-        it('ist 0 bei Musterkenntnis 0, unabhaengig vom sichtbaren Fenster', () => {
+        it('ist 0 bei Musterkenntnis 0, unabhaengig von der gekauften Tiefe', () => {
             expect(getAttendantLookahead(3, 0)).toBe(0);
         });
 
-        it('entspricht bei voller Musterkenntnis genau dem sichtbaren Fenster (wie ein Spieler)', () => {
+        it('entspricht bei voller Musterkenntnis genau der gekauften Tiefe (wie ein Spieler)', () => {
             expect(getAttendantLookahead(3, 1)).toBe(3);
             expect(getAttendantLookahead(1, 1)).toBe(1);
         });
@@ -78,75 +74,87 @@ describe('AttendantEngine', () => {
         });
     });
 
+    describe('getAttendantPrecision', () => {
+        it('ist 0 bei Musterkenntnis 0, unabhaengig von der gekauften Praezision', () => {
+            expect(getAttendantPrecision(4, 0)).toBe(0);
+        });
+
+        it('entspricht bei voller Musterkenntnis genau der gekauften Praezision', () => {
+            expect(getAttendantPrecision(4, 1)).toBe(4);
+        });
+
+        it('rundet auf eine ganze Kandidatenzahl ab', () => {
+            expect(getAttendantPrecision(4, 0.5)).toBe(2);
+        });
+    });
+
     describe('getAttendantResolvedAction', () => {
-        const resolved: ResolvedAction = { id: 'blitzlauf', payoutRange: [12, 19], failureChance: 0 };
+        const resolved: ResolvedAction = { id: 'sprint', payoutRange: [16, 22] };
 
         it('behaelt die id bei', () => {
-            expect(getAttendantResolvedAction(resolved, 0.5).id).toBe('blitzlauf');
+            expect(getAttendantResolvedAction(resolved, 0.5).id).toBe('sprint');
         });
 
         it('skaliert die payoutRange mit der Effizienz', () => {
             const derived = getAttendantResolvedAction(resolved, 1);
-            expect(derived.payoutRange[0]).toBeCloseTo(12 * ATTENDANT_MAX_EFFICIENCY);
-            expect(derived.payoutRange[1]).toBeCloseTo(19 * ATTENDANT_MAX_EFFICIENCY);
+            expect(derived.payoutRange[0]).toBeCloseTo(16 * ATTENDANT_MAX_EFFICIENCY);
+            expect(derived.payoutRange[1]).toBeCloseTo(22 * ATTENDANT_MAX_EFFICIENCY);
         });
 
-        it('laesst die failureChance unveraendert (0 bleibt 0)', () => {
-            expect(getAttendantResolvedAction(resolved, 0).failureChance).toBe(0);
+        it('skaliert auch eine negative (Verlust-)Spanne einheitlich', () => {
+            const loss: ResolvedAction = { id: 'sprint', payoutRange: [-10, -7] };
+            const derived = getAttendantResolvedAction(loss, 1);
+            expect(derived.payoutRange[0]).toBeCloseTo(-10 * ATTENDANT_MAX_EFFICIENCY);
+            expect(derived.payoutRange[1]).toBeCloseTo(-7 * ATTENDANT_MAX_EFFICIENCY);
         });
 
-        it('laesst eine failureChance von 1 (harte Aktion am Gegenstueck) unveraendert', () => {
-            const failing: ResolvedAction = { id: 'blitzlauf', payoutRange: [12, 19], failureChance: 1 };
-            expect(getAttendantResolvedAction(failing, 1).failureChance).toBe(1);
-        });
-
-        it('laesst eine feste Zwischenstufen-Fangchance unveraendert', () => {
-            const intermediate: ResolvedAction = { id: 'risky', payoutRange: [14, 22], failureChance: 0.35 };
-            expect(getAttendantResolvedAction(intermediate, 1).failureChance).toBeCloseTo(0.35);
-        });
-    });
-
-    describe('chooseAttendantIntermediateTier', () => {
-        it('wirft bei leerer tiers-Liste', () => {
-            expect(() => chooseAttendantIntermediateTier([], 0.5)).toThrow(RangeError);
-        });
-
-        it('waehlt bei Musterkenntnis 0 die sicherste Zwischenstufe', () => {
-            expect(chooseAttendantIntermediateTier(tiers, 0)).toBe(safe);
-        });
-
-        it('waehlt bei voller Musterkenntnis die riskanteste Zwischenstufe', () => {
-            expect(chooseAttendantIntermediateTier(tiers, 1)).toBe(risky);
-        });
-
-        it('waehlt bei mittlerer Musterkenntnis eine mittlere Zwischenstufe', () => {
-            expect(chooseAttendantIntermediateTier(tiers, 0.5)).toBe(balanced);
+        it('liefert 0-Spanne bei Musterkenntnis 0', () => {
+            const derived = getAttendantResolvedAction(resolved, 0);
+            expect(derived.payoutRange[0]).toBe(0);
+            expect(derived.payoutRange[1]).toBe(0);
         });
     });
 
     describe('chooseAttendantAction', () => {
-        it('waehlt am Gegenstueck von hardA die andere harte Aktion (hardB)', () => {
-            expect(chooseAttendantAction(hardActions, tiers, 'alarm', 1)).toBe(hardB);
+        it('wirft bei leerer actions-Liste', () => {
+            expect(() => chooseAttendantAction([], undefined)).toThrow(RangeError);
         });
 
-        it('waehlt am Gegenstueck von hardB die andere harte Aktion (hardA)', () => {
-            expect(chooseAttendantAction(hardActions, tiers, 'nah', 1)).toBe(hardA);
+        it('waehlt bei exakt bekanntem Zustand (1 verbleibender Kandidat) die dort konternde Aktion', () => {
+            // actions[0].counterState === 'nah' -> bei bekanntem Zustand 'nah' gewinnt actions[0]
+            expect(chooseAttendantAction(actions, ['nah'])).toBe(actions[0]);
         });
 
-        it('waehlt am neutralen Zustand die harte Aktion mit dem hoeheren Payout', () => {
-            // neutral: weder hardA.counterState ('alarm') noch hardB.counterState ('nah')
-            // hardB (Mittelwert 19) hat einen hoeheren Payout als hardA (Mittelwert 15.5)
-            expect(chooseAttendantAction(hardActions, tiers, 'fern', 1)).toBe(hardB);
+        it('waehlt bei jedem anderen exakt bekannten Zustand konsistent die jeweils konternde Aktion', () => {
+            for (const action of actions) {
+                expect(chooseAttendantAction(actions, [action.counterState])).toBe(action);
+            }
         });
 
-        it('faellt bei unbekanntem Zustand (ausserhalb des eigenen Lookaheads) auf eine Zwischenstufe zurueck', () => {
-            expect(chooseAttendantAction(hardActions, tiers, undefined, 0)).toBe(safe);
-            expect(chooseAttendantAction(hardActions, tiers, undefined, 1)).toBe(risky);
+        it('meidet bei partieller Information eine Aktion, deren Verlust-Zustand noch Kandidat ist', () => {
+            // actions[0] (sprint) verliert bei 'rueckzug'. Bleibt 'rueckzug' als Kandidat,
+            // aber gewinnt actions[0] bei 'nah' (nicht mehr Kandidat) -> sprint ist unsicher.
+            const remaining = ['rueckzug', 'sichtkontakt']; // 2 von 5 Kandidaten uebrig
+            const result = chooseAttendantAction(actions, remaining);
+            expect(result.losesToState).not.toBe('rueckzug');
+            // duerfte auch nicht 'sichtkontakt' als losesToState haben, da ebenfalls Kandidat
+            expect(remaining).not.toContain(result.losesToState);
         });
 
-        it('raet nie blind auf eine harte Aktion, auch nicht bei hoher Musterkenntnis', () => {
-            const result = chooseAttendantAction(hardActions, tiers, undefined, 0.99);
-            expect(result.kind).toBe('intermediate');
+        it('bevorzugt unter sicheren Aktionen eine, deren Gewinn-Zustand noch moeglich ist', () => {
+            // versteck (actions[3]) gewinnt bei 'rueckzug', verliert bei 'alarm'.
+            // Kandidaten: 'rueckzug' (Gewinn fuer versteck) und 'fern' (neutral fuer alle).
+            const remaining = ['rueckzug', 'fern'];
+            const result = chooseAttendantAction(actions, remaining);
+            expect(result.counterState).toBe('rueckzug');
+        });
+
+        it('faellt bei komplett fehlender Information (undefined) auf eine feste Wahl zurueck', () => {
+            expect(chooseAttendantAction(actions, undefined)).toBe(actions[0]);
+        });
+
+        it('faellt bei allen Zustaenden als Kandidat (Praezision 0) auf dieselbe feste Wahl zurueck', () => {
+            expect(chooseAttendantAction(actions, [...states])).toBe(actions[0]);
         });
     });
 

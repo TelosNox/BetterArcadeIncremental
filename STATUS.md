@@ -4,8 +4,293 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7b (Kernmechanik-Revision) — Code steht, 185/185 Tests grün, Lint/Typecheck/Build grün, manuell gegen `npm run dev` verifiziert (siehe Ergebnis-Abschnitt unten). Separater BUG (Rückweg Automat→Halle) ebenfalls behoben.
-**Läuft/als Nächstes:** Wartet auf Nutzer-Verifikation/Playtest der Revision. Danach Entscheidung: weiter mit Phase 8 (Politur) oder weitere Balance-Iteration auf Basis von Phase-7b-Feedback.
+**Zuletzt abgeschlossen:** Phase 7c (Kernmechanik-Revision v2) — Code steht, 197/197 Tests grün, Lint/Typecheck/Build grün, manuell per Playwright-Treiberskript gegen `npm run dev` verifiziert (siehe Abschnitt "Ergebnis: Phase 7c umgesetzt" unten). Wartet auf Nutzer-Playtest/Rückmeldung, bevor mit Phase 8/9 weitergemacht wird (normale CLAUDE.md-Regel: nach Phasenabschluss anhalten).
+**Läuft/als Nächstes:** Nichts — wartet auf Nutzer-Feedback zu Phase 7c. Phase 8 (Politur) / Phase 9 (Abschluss) bleiben zurückgestellt.
+
+## NEUE PHASE 7c: Kernmechanik-Revision v2 (2026-07-09, mit Nutzer abgestimmt)
+
+Phase 7b (2 harte Konter-Aktionen + Zwischenstufen) hat sich im Playtest immer
+noch nicht wie eine planbare Entscheidung angefühlt. Nutzer-Vorschlag: ein
+reiner ZYKLISCHER Konter ohne sichere Option. Nach Rückfrage folgende
+verbindliche Entscheidungen (siehe auch game-spec.md 4.1b für die
+spielerseitige Beschreibung — 4.1a bleibt als Historie stehen, nur das
+Aktionsmodell wird ersetzt, "festes Pattern pro Run" und "ticket-finanzierte
+automaten-interne Vorschau-Upgrades" aus 4.1a gelten unverändert weiter):
+
+1. **n=5 Aktionen, zyklisch, jede kontert genau die nächste** (A→kontert→B,
+   B→C, C→D, D→E, E→A). Damit auch: alle vier Automaten brauchen 5
+   Pattern-Zustände statt bisher 3 (1:1 zu den 5 Aktionen), inkl. komplett
+   neuer Transitions-Matrizen — reines Rework von `machines.config.ts`, keine
+   Wiederverwendung der alten 3-Zustands-Configs.
+2. **Drei Ergebnis-Stufen statt Erfolg/Fehlschlag:** Großer Gewinn (Zustand =
+   der von der Aktion gekonterte Nachbar), Verlust (Zustand = der Vorgänger,
+   der DIESE Aktion kontert), Einfacher Treffer (die übrigen 3 Zustände).
+   Verlust ist ein EIGENER, fester Payout-Bereich (negativ), KEIN
+   Prozentabzug vom aktuellen Punktestand mehr — löst `FAILURE_PENALTY_FRACTION`
+   aus Phase 7b vollständig ab.
+3. **Kein Erfolg/Fehlschlag-Konzept in der Engine mehr nötig:** Jede Aktion
+   trifft immer, nur die Payout-Spanne variiert (kann negativ sein). Das
+   erlaubt eine ECHTE Vereinfachung von `PushYourLuckEngine.resolveAction()`
+   — die bisherige `failureChance`-Bernoulli-Rolle entfällt komplett, es wird
+   nur noch ein Wert aus einer (ggf. negativen) Payout-Spanne gezogen und auf
+   den Punktestand addiert. Bitte diese Vereinfachung tatsächlich umsetzen,
+   nicht nur die alte failureChance-basierte Struktur mit failureChance=0
+   nachbilden — das wäre unnötig komplizierter Code für ein jetzt einfacheres
+   Modell.
+4. **Blind-Erwartungswert-Garantie, automatisiert geprüft:** Für jede Aktion
+   jedes Automaten muss der Erwartungswert unter der ECHTEN stationären
+   Verteilung des Patterns (per Power-Iteration bestimmen, wie schon in Phase
+   7b für den alten Trade-off-Check gemacht — NICHT einfach 1/n annehmen,
+   falls die Übergangswahrscheinlichkeiten nicht gleichverteilt sind) positiv
+   sein. Zusätzlich prüfen: keine Aktion darf allein aufgrund der stationären
+   Verteilung (ganz ohne Vorschau) einen klar höheren Blind-EV haben als die
+   anderen — sonst gäbe es eine "immer diesen einen Knopf drücken"-
+   Dominanzstrategie, die den Lese-Skill entwertet (siehe Risiko-Notiz unten).
+5. **Peak-Score-Sticky-Milestone-Logik aus Phase 7b bleibt** (unverändert
+   sinnvoll, jetzt sogar einfacher zu begründen: ein einzelner Verlust ist
+   jetzt ein fixer Betrag statt eines Prozentsatzes).
+6. **Zwei-Achsen-Vorschau statt einfachem "zeige d Positionen exakt"
+   (Ergänzung 2026-07-09, siehe game-spec.md 4.1b):** Ersetzt die ursprünglich
+   in dieser Phase geplante einfache Sichtweiten-Vorschau. Präzision `p`
+   (0 bis n−1) schließt `p` garantiert falsche Kandidaten pro sichtbarer
+   Position aus (wahrer Zustand bleibt unter den `n−p` verbleibenden
+   versteckt); Sichtweite `d` (1 bis n) bestimmt, wie viele kommende
+   Positionen überhaupt eine solche Teilinformation bekommen. ZWEI separate,
+   wiederholt kaufbare, im Preis steigende `MachineUpgradeDef`-Leitern pro
+   Automat (ticket-finanziert), `p` gedeckelt bei n−1 (= Zustand de facto
+   bekannt), `d` gedeckelt bei n. `p` gilt einheitlich für alle sichtbaren
+   Positionen (keine dritte Dimension "Präzision je Tiefe"). Die pro Position
+   ausgeschlossenen Kandidaten werden EINMAL bei Run-Start zusammen mit der
+   festen Sequenz ermittelt und bleiben für den gesamten Run stabil (keine
+   erneute Zufallsziehung bei wiederholtem Hinsehen — vermeidet eine
+   zusätzliche versteckte Zufallsebene, Baukasten 1.11).
+7. **Startwerte + Kreuz-Preis-Kopplung (Ergänzung 2026-07-09):** Start bei
+   `d=1, p=1` (nicht 0), damit der Spieler nie komplett blind startet.
+   Da `p` auf ALLE sichtbaren Positionen wirkt, ist der Informationswert der
+   Kombination quasi ein Produkt aus `d` und `p` (nicht additiv) — ohne
+   Bremse würde einseitiges Rushen eines Pfads zu unkontrolliertem Wachstum
+   führen. Deshalb: KEIN harter Ausschluss, aber ein multiplikativer
+   Kreuz-Preis-Aufschlag, abhängig davon, wie viele Stufen des JEWEILS
+   ANDEREN Pfads bereits über den Startwert hinaus gekauft wurden:
+   ```
+   Preis(nächste Tiefe-Stufe)      = Basispreis_Tiefe(Stufe)      × (1+k)^(gekaufte Präzisions-Stufen über Start)
+   Preis(nächste Präzisions-Stufe) = Basispreis_Präzision(Stufe)  × (1+k)^(gekaufte Tiefe-Stufen über Start)
+   ```
+   `k = 0.2` als Startwert (20 % Aufschlag pro bereits gekaufter Stufe des
+   anderen Pfads) — bei vollständig einseitigem Rushen ergibt das am Ende
+   ca. 70–95 % Aufpreis auf die letzten Stufen des vernachlässigten Pfads
+   (1.2³≈1.73, 1.2⁴≈2.07), bei ausgewogenem Einkauf bleibt der Effekt
+   moderat. Basispreise pro Achse geometrisch wachsend, als Ausgangspunkt:
+   Tiefe (Stufe 2/3/4/5): 10/22/48/107 Tickets (Wachstumsfaktor ~2.2);
+   Präzision (Stufe 2/3/4): 15/38/94 Tickets (Wachstumsfaktor ~2.5, steiler,
+   weniger Stufen bis Maximum). **Diese Basispreise MÜSSEN pro Automat
+   proportional zur jeweiligen Ticket-Ökonomie skaliert werden** (Champion's
+   Ledger hat z. B. deutlich höhere Meilenstein-Schwellen als Greed Run) —
+   nicht die exakt gleichen absoluten Zahlen für alle vier Automaten
+   übernehmen.
+   **Pflicht-Zielwert-Check (automatisiert, nicht nur gefühlt passend):**
+   Simuliere den erwarteten Ticket-Ertrag bis zum ERSTEN Erreichen des
+   letzten Meilensteins (Erwartungswert-Rechnung über die Payout-Ranges,
+   ähnlich der bereits vorhandenen Blind-EV-Berechnung) und prüfe, dass
+   damit ~85–95 % der Gesamtkosten BEIDER Leitern (inkl. Kreuz-Kopplung bei
+   ausgewogenem Einkauf) finanzierbar sind — "fast alle Upgrades bei
+   Durchspielen gekauft" als Zielkorridor, nicht exakt 100 % und nicht
+   deutlich darunter. Falls die Basispreise das nicht hergeben, anpassen
+   und die finalen Zahlen in STATUS.md dokumentieren.
+
+**PM-Risikohinweise für die Umsetzung (bitte aktiv gegenprüfen, nicht nur
+Kenntnis nehmen):**
+- Die Attendant-Logik aus Phase 7b (`chooseAttendantAction`,
+  `getAttendantLookahead` etc.) basiert vollständig auf dem alten "harte
+  Aktion vs. Zwischenstufe"-Modell und muss komplett neu gedacht werden: kennt
+  der Attendant den Zustand an dieser Position (eigener Lookahead), wählt er
+  die dort konternde Aktion (großer Gewinn); kennt er ihn nicht, sind laut
+  Blind-EV-Garantie alle 5 Aktionen ungefähr gleichwertig -- eine einfache
+  Fallback-Wahl (z. B. `chooseAttendantIntermediateTier`-Analogon) reicht,
+  MUSS aber nicht mehr zwischen zwei Aktionsarten unterscheiden.
+- `MAX_PREVIEW_MOVES` (bisher 3, an die alte Zustandsanzahl gekoppelt) muss
+  auf 5 angepasst werden. Die bisherige EINE `MachineUpgradeDef`-Leiter
+  (visibility) wird durch das Zwei-Achsen-Modell oben ersetzt: ZWEI separate
+  Upgrade-Leitern pro Automat (Sichtweite `d` 1→5, Präzision `p` 0→4), neuer
+  `UpgradeEffect`/`MachineUpgradeDef`-Typ mit zwei Effekt-Varianten statt
+  einer. Siehe game-spec.md 4.1b, Abschnitt "Zwei-Achsen-Vorschau".
+- `types.ts`: `HardActionDef`/`IntermediateActionDef`-Unterscheidung aus
+  Phase 7b entfällt zugunsten eines einzigen, symmetrischen Aktionstyps
+  (z. B. `CyclicActionDef` mit `payoutBig`/`payoutSimple`/`payoutLoss`
+  Ranges) -- bitte selbst einen sauberen Typ entwerfen, keine
+  Kompatibilitäts-Altlasten aus Phase 7b mitschleppen.
+
+Betroffene Dateien voraussichtlich: `src/engine/types.ts` (Aktionstyp
+ersetzen), `src/engine/PushYourLuckEngine.ts` (+Test, echte Vereinfachung),
+`src/data/machines.config.ts` (alle vier Automaten komplett neu: 5
+Zustände, 5 Aktionen, neue Resolutionsfunktion, Blind-EV-Test),
+`src/engine/AttendantEngine.ts` (+Test, neues Auswahlmodell),
+`src/game/scenes/MachineScene.ts` (Anzeige/Vorschau/Kaufoberfläche an n=5
+anpassen).
+
+### Ergebnis: Phase 7c umgesetzt (2026-07-09)
+
+**`src/engine/types.ts`:** `HardActionDef`/`IntermediateActionDef` komplett
+entfernt, ersetzt durch einen einzigen `CyclicActionDef` (`id`,
+`counterState` = Grosser-Gewinn-Zustand, `losesToState` = Verlust-Zustand,
+`payoutBig`/`payoutSimple`/`payoutLoss` Ranges). `ResolvedAction` verliert
+`failureChance` komplett -- nur noch `id` + `payoutRange` (kann negativ
+sein). `MachineUpgradeDef.effect` bekommt zwei Varianten (`previewDepth`/
+`previewPrecision`) statt der bisherigen `visibility`. `MachineConfig`
+tauscht das einzelne `upgrades`-Array gegen zwei unabhaengige Leitern
+(`depthUpgrades`/`precisionUpgrades`).
+
+**`src/engine/PushYourLuckEngine.ts` (echte Vereinfachung, wie gefordert):**
+`resolveAction()` zieht jetzt nur noch EINEN rng()-Wert (Payout-Position in
+der ggf. negativen Spanne) statt zwei (Fehlschlag-Bernoulli + Payout-
+Position). `ActionResult` verliert `success`/`penalty`, nur noch
+`payout`/`scoreAfter`. `FAILURE_PENALTY_FRACTION` und das gesamte
+Erfolg/Fehlschlag-Konzept sind vollstaendig entfernt (nicht nur mit
+failureChance=0 nachgebildet). Design-Entscheidung, nicht explizit
+gefordert: Punktestand wird bei 0 nach unten geklemmt (`Math.max(0, ...)`)
+-- ein Verlust ist jetzt ein fester Betrag statt eines Prozentabzugs und
+koennte ohne Klemmung den ungebankten Punktestand negativ machen;
+`EconomyStore.addTickets`/`bank()` wuerden dann bei einem negativen Betrag
+werfen. Peak-Sticky-Meilenstein-Logik aus Phase 7b bleibt unveraendert
+(canBank/getReachedMilestones basieren weiterhin auf `peakScore`, nicht dem
+aktuellen, ggf. durch einen Verlust gedrueckten Punktestand).
+
+**Geaenderte Tests in `PushYourLuckEngine.test.ts`:** alle FAILURE_PENALTY_
+FRACTION-Tests entfernt/ersetzt durch Tests fuer negative Payout-Ranges
+(Verlust zieht den festen Betrag direkt ab, Klemmung bei 0, mehrere
+Verluste in Folge, Peak-Stickiness und Banking bleiben wie in Phase 7b
+erhalten, nur ohne Prozentabzug-Semantik).
+
+**`src/data/machines.config.ts` (komplett neu):** Alle vier Automaten haben
+jetzt 5 Pattern-Zustaende und 5 zyklische Aktionen (thematisch benannt,
+siehe Tabelle unten). `buildCyclicActions(states, templates)` leitet
+`counterState`/`losesToState` STRUKTURELL aus der Zyklusposition ab (Aktion
+an Index i gewinnt bei `states[i+1]`, verliert bei `states[i-1]`) statt von
+Hand transkribiert zu werden -- schliesst Zuordnungsfehler aus, automatisiert
+per Test geprueft (`buildCyclicActions`-Tests + "bilden je einen
+vollstaendigen 5er-Zyklus"-Test ueber alle vier Automaten).
+
+| Automat | Zustaende (Zyklus) | Aktionen (Zyklus, gleiche Reihenfolge) |
+|---|---|---|
+| Greed Run | fern, nah, alarm, sichtkontakt, rueckzug | sprint, schleicher, ablenker, versteck, vorstoss |
+| Trap Tunnels | stabil, wackelig, einsturz, verschuettet, freigelegt | sprengladung, stuetzpfeiler, schaufelzug, tunnelblick, notausstieg |
+| Beat Ledger | ruhig, treibend, doppelschlag, synkope, break | grundschlag, doppelkombo, synkopenkombo, breakbeat, standakkord |
+| Champion's Ledger | finte, aggressiv, defensiv, ermuedet, spezialmove | angriff, konter, ausdauerschlag, spezialkonter, tempowechsel |
+
+**Blind-EV-Garantie (automatisiert, Power-Iteration wie in Phase 7b, siehe
+`machines.config.test.ts`):** stationaere Verteilung je Automat bewusst mild
+(nicht perfekt uniform, aber auch nicht stark geskewt) gewaehlt:
+
+| Automat | Blind-EV Bereich (min–max ueber die 5 Aktionen) | Dominanz-Verhaeltnis |
+|---|---|---|
+| Greed Run | 5.38 – 6.64 | 1.234 |
+| Trap Tunnels | 7.68 – 8.96 | 1.167 |
+| Beat Ledger | 9.46 – 10.33 | 1.092 |
+| Champion's Ledger | 11.98 – 12.94 | 1.080 |
+
+Alle Blind-EVs > 0 (Garantie erfuellt) und alle Verhaeltnisse unter der
+gewaehlten Toleranzschwelle 1.25 (keine Aktion dominiert das blinde Spiel;
+Champion's Ledger als komplexester Automat bewusst mit der flachsten
+Verteilung/kleinsten Dominanz).
+
+**Zwei-Achsen-Vorschau:** `computeCandidateExclusionOrder(states, trueState,
+rng)` wuerfelt EINMAL pro Position eine stabile Ausschluss-Reihenfolge aller
+falschen Kandidaten; `getExcludedCandidates(order, precision)` schneidet
+die ersten `p` davon ab -- monoton (hoehere Praezision deckt strikt mehr
+derselben Reihenfolge auf, nie eine neu gewuerfelte, widerspruechliche
+Menge). Start `d=1, p=1` (nie komplett blind), Deckel `d<=5` (=`N_STATES`),
+`p<=4` (=`N_STATES-1`, Zustand de facto bekannt).
+
+**Kreuz-Preis-Kopplung:** `getMachineUpgradeCost(machine, upgrade, ownedIds)`
+= Basispreis × `1.2^(bereits gekaufte Stufen der jeweils anderen Achse)`.
+Basispreise MUSSTEN gegenueber der urspruenglichen Vorgabe (10/22/48/107 bzw.
+15/38/94) deutlich nach unten skaliert werden -- die Vorgabe-Zahlen ergaben
+unskaliert ~334% von Greed Runs letztem Meilenstein (100), weit ausserhalb
+des 85-95%-Zielkorridors. Finale, per Skript verifizierte Basispreise (siehe
+Zielwert-Tabelle unten), Greed Run als Skalierungs-Basis (Faktor 1.0), die
+uebrigen drei proportional zum Verhaeltnis ihrer letzten Meilenstein-Schwelle
+zu Greed Runs 100 skaliert (1.2 / 1.4 / 1.8):
+
+| Automat | Tiefe-Basispreise (Stufe 2-5) | Praezisions-Basispreise (Stufe 2-4) | Meilenstein | Interleaved Gesamtkosten | Zielwert-Verhaeltnis |
+|---|---|---|---|---|---|
+| Greed Run | 2, 4, 8, 18 | 3, 6, 16 | 100 | 89.31 | 89.3% |
+| Trap Tunnels | 2, 5, 10, 22 | 4, 7, 19 | 120 | 108.13 | 90.1% |
+| Beat Ledger | 3, 6, 11, 25 | 4, 8, 22 | 140 | 123.58 | 88.3% |
+| Champion's Ledger | 4, 7, 14, 32 | 5, 11, 29 | 180 | 159.81 | 88.8% |
+
+Alle vier im Zielkorridor 85-95%, per `it.each`-Test automatisiert geprueft
+(`getUpgradeCostToMilestoneRatio`). "Interleaved Gesamtkosten" = Summe bei
+ausgewogenem Einkauf (Kaufreihenfolge Tiefe1, Praezision1, Tiefe2,
+Praezision2, Tiefe3, Praezision3, Tiefe4 -- Tiefe hat eine Stufe mehr).
+Modellannahme fuer den erwarteten Ticket-Ertrag: da 1 Punkt Score = 1 Ticket
+(Banking sichert den Punktestand direkt), naehert der letzte Meilenstein-
+Schwellenwert selbst den erwarteten Ertrag eines abgeschlossenen Laufs an
+(ein Spieler bankt kurz NACH Erreichen der Schwelle, der Ueberschuss pro
+Schritt ist klein relativ zur Schwelle).
+
+**`src/engine/AttendantEngine.ts`:** `chooseAttendantAction(hardActions,
+intermediateActions, ...)` ersetzt durch `chooseAttendantAction(actions,
+remainingCandidates)` -- kennt der Attendant den Zustand an einer Position
+EXAKT (`remainingCandidates.length === 1`), waehlt er immer die dort
+konternde Aktion (garantierter Grosser Gewinn). Bei PARTIELLER Praezision
+(mehrere, aber nicht alle Kandidaten uebrig) meidet er -- Ermessens-
+entscheidung, hier bewusst getroffen -- jede Aktion, deren Verlust-Zustand
+noch Kandidat ist, und bevorzugt unter den verbleibenden "sicheren" Aktionen
+eine, deren Gewinn-Zustand ebenfalls noch moeglich ist. Begruendung: das
+nutzt verfuegbare Teilinformation, ohne dass der Attendant dafuer die volle
+PatternEngine-Verteilung kennen muesste (bleibt reine Kandidatenmengen-
+Logik, konsistent mit der Blind-EV-Garantie, die sicherstellt, dass eine
+komplett uninformierte Wahl -- Fallback `actions[0]` -- keine Aktion klar
+benachteiligt). `getAttendantResolvedAction` skaliert die GESAMTE
+Payout-Spanne einheitlich mit der Effizienz (auch im Verlust-Fall) --
+bewusst keine Sonderregel fuer negative Payouts, da ein vorausschauend
+spielender Attendant Verluste bereits durch seine Aktionswahl vermeidet.
+
+**`src/game/scenes/MachineScene.ts`:** Zwei-Achsen-Vorschau-Anzeige (pro
+sichtbarer Position: verbleibende Kandidaten als "moeglich [...]" mit
+separat aufgelisteten "ausgeschlossen"-Kandidaten; ausserhalb der
+Sichtweite weiterhin "??"). 5 Aktions-Buttons in einer Reihe (ersetzt die
+alte Hart/Zwischenstufe-Zweiteilung), zeigen live GROSSER GEWINN/VERLUST
+sicher bzw. "Gewinn/Verlust ausgeschlossen/moeglich" je nach aktuellem
+Kandidatenstand. Zwei separate Kaufoberflaechen fuer Tiefe- und
+Praezisions-Upgrades (je eigene Reihe, zeigt den aktuellen, kreuz-preis-
+abhaengigen Preis live).
+
+**Verifiziert:** `npm test` (197/197 gruen, +12 gegenueber Phase 7b), `npm
+run lint` sauber, `npx tsc --noEmit` sauber, `npm run build-nolog`
+erfolgreich. Manuell per Playwright-Treiberskript gegen `npm run dev`
+(Skripte/Screenshots nicht Teil des Repos, nur Session-interne
+Verifikation, keine Konsolenfehler in allen Laeufen):
+- Greed Run frisch gestartet: Vorschau zeigt bei Start (d=1, p=1) korrekt
+  "moeglich [fern, alarm, sichtkontakt, rueckzug] (ausgeschlossen: nah)" fuer
+  Position 1, alle weiteren Positionen "??"; Aktions-Buttons zeigen korrekt
+  "Gewinn ausgeschlossen, Verlust moeglich" fuer die Aktion, deren
+  Gewinn-Zustand "nah" gerade ausgeschlossen wurde, und "Gewinn und Verlust
+  beide noch moeglich" fuer die uebrigen.
+- Aktion gequeued + ausgefuehrt: Feedback zeigt korrekt "Treffer" (nicht
+  Gewinn/Verlust) beim tatsaechlich neutralen Zustand, Punktestand steigt um
+  den gezogenen `payoutSimple`-Wert; Vorschau fuer die naechste Position
+  danach mit NEU gewuerfelter, weiterhin stabiler Ausschluss-Reihenfolge.
+- Tiefe- und Praezisions-Upgrade gekauft (Streckenkenntnis I: 200→198
+  Tickets bei Kosten 2.0 ohne Praezisions-Kopplung; Scharfblick I:
+  198→194.4 bei Kosten 3.6 = 3 × 1.2¹, da 1 Tiefe-Stufe bereits gekauft):
+  Kreuz-Preis-Kopplung stimmt exakt mit der Formel ueberein, Vorschau-Fenster
+  wuchs sofort sichtbar (Tiefe 1→2, Praezision 1→2, mehr ausgeschlossene
+  Kandidaten pro Position, monotone Obermenge der vorherigen Ausschluesse).
+- Attendant mit Musterkenntnis 0.9, 20s Leerlauf in der Halle: 0 → ~111.1
+  Tickets, keine Konsolenfehler (Groessenordnung konsistent mit dem in
+  Phase 5 verifizierten Wert von 83.9 Tickets/20s bei aehnlicher
+  Musterkenntnis -- kein Ausreisser durch die neue Balance).
+
+**Bewusst NICHT als eigene Aenderung behandelt:** `PatternEngine`-Klasse
+selbst unangetastet (wie gefordert) -- `getVisibility()`/
+`getVisibleDistribution()` sind seit dieser Phase funktional ungenutzt
+(die Zwei-Achsen-Vorschau wird direkt ueber `depthUpgrades`/
+`precisionUpgrades` gesteuert, nicht mehr ueber die PatternEngine-
+Sichtbarkeits-Berechnung). `PatternConfig.baseVisibility`/
+`visibilityPerUpgrade` bleiben im Typ (von `PatternEngine.
+validatePatternConfig` weiterhin gefordert) und sind in allen vier Configs
+auf einen neutralen Platzhalterwert (`1`/`[]`) gesetzt.
 
 ## BUG (behoben, 2026-07-09) — Rückweg Automat→Halle nach zweitem Durchlauf
 
@@ -245,6 +530,7 @@ Attendant lief mit dem neuen Aktionsmodell fehlerfrei automatisiert (Tickets
 - [x] Phase 6 — Automaten 2–4 — abgenommen (PM-Review 2026-07-09, siehe Bedingungen unten)
 - [x] Phase 7 — Hallen-Upgrades & Cross-Layer-Feedback — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Phase 7" unten)
 - [x] Phase 7b — Kernmechanik-Revision — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Ergebnis: Phase 7b umgesetzt" oben)
+- [x] Phase 7c — Kernmechanik-Revision v2 — Code steht, wartet auf Nutzer-Verifikation (siehe Abschnitt "Ergebnis: Phase 7c umgesetzt" oben)
 - [ ] Phase 8 — Politur / Juice
 - [ ] Phase 9 — Abschluss-Erlebnis
 

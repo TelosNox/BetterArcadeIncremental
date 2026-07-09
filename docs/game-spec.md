@@ -69,45 +69,80 @@ Alle vier teilen sich dieselben drei Kernsysteme (Details siehe `implementation-
 4. **Meilenstein-Entscheidung:** An Checkpoints: Banking (Lauf sichern) oder Weitermachen (höheres Risiko für höheren Ertrag)
 5. **Abschluss-Kriterium:** Erreichen des letzten Checkpoints = "durchgespielt" → schaltet Attendant für diesen Automaten frei. Danach optionaler Score-Attack-Modus für wiederholtes Spielen (Baukasten 1.6)
 
-### 4.1a Kernmechanik-Revision (2026-07-09, ersetzt Teile von 4.1 und der Risiko-Achsen in 4.2–4.5)
+### 4.1a Kernmechanik-Revision v1 (2026-07-09, TEILWEISE ERSETZT durch 4.1b unten)
 
-Nach Playtesting durch den Nutzer wurde die Auflösung von "Planung gegen
-Verhaltensmuster" neu festgelegt — die ursprüngliche Umsetzung (kontinuierlicher
-Gefahren-Level moduliert eine generische Fangchance, Muster wird live pro
-Ausführungsschritt neu gewürfelt) hat sich als zu abstrakt/zufällig anfühlend
-erwiesen. Neue, verbindliche Regeln:
+~~Zwei Konter-Aktionen + mehrere Zwischenstufen, Fehlschlag = Teilstrafe vom
+aktuellen Punktestand~~ — dieses Aktionsmodell ist durch 4.1b unten ersetzt.
+Die folgenden Punkte aus v1 gelten weiterhin unverändert:
 
 - **Festes Pattern pro Run:** Die komplette Zug-Sequenz eines Automaten-Runs
   steht bei Run-Start fest (wie ein vorab generiertes Level-/Tunnellayout),
   nicht mehr live neu gewürfelt pro Ausführungsschritt.
-- **Zwei Konter-Aktionen + mehrere Zwischenstufen:** Jeder Automat hat genau
-  zwei "harte" Aktionen (thematisch benannt, z. B. Angriff/Konter bei
-  Champion's Ledger), die sich gegenseitig exakt kontern, PLUS mehrere
-  "Zwischending"-Aktionen mit abgestuftem, aber geringerem Risiko/Ertrag
-  (state-unabhängig, ähnlich der bisherigen safe/balanced-Stufen).
-- **Auflösung:** Von den drei (oder mehr) Pattern-Zuständen sind zwei die
-  designierten Gegenstücke je einer harten Aktion; der/die übrigen Zustand/
-  Zustände gelten als neutral. Eine harte Aktion scheitert NUR, wenn der
-  aktuelle Pattern-Zug exakt ihr designiertes Gegenstück ist — bei jedem
-  anderen Zustand (inkl. neutral UND dem Gegenstück der jeweils anderen
-  harten Aktion) trifft sie. Zwischending-Aktionen sind vom Pattern-Zustand
-  unabhängig (eigene, im Voraus bekannte Fangchance je Stufe).
-- **Fehlschlag = Teilstrafe, kein Run-Ende:** Ein Fehlschlag kostet einen Teil
-  (nicht alles) des aktuell ungebankten Punktestands (genaue Größenordnung
-  30–50 %, iterativ zu tunen). Es gibt kein hartes "Busted"-Run-Ende mehr —
-  der Run läuft weiter, bis gebankt wird oder das letzte Milestone erreicht
-  ist.
 - **Vorschau als In-Automat-Progression:** Wie viele Züge der festen Sequenz
   im Voraus sichtbar sind, ist über automaten-EIGENE Upgrades erweiterbar,
   die mit den eigenen Tickets DIESES Automaten bezahlt werden (nicht mit
   Hallen-Credits) — echte Fortschritts-Achse innerhalb eines einzelnen
   Automaten, unabhängig von der Hallen-Wirtschaft.
 
+### 4.1b Kernmechanik-Revision v2 (2026-07-09, ersetzt das Aktionsmodell aus 4.1a)
+
+Nach weiterem Playtesting: das "zwei harte Aktionen + Zwischenstufen"-Modell
+fühlte sich immer noch nicht wie eine planbare Entscheidung an. Neues,
+verbindliches Aktionsmodell — ein reiner zyklischer Konter ohne sichere Option:
+
+- **n=5 Aktionen pro Automat, zyklisch angeordnet** (A, B, C, D, E als
+  Platzhalter-Namen — pro Automat thematisch zu benennen). Jede Aktion
+  kontert GENAU die nächste in der Zyklus-Reihenfolge (A kontert B, B kontert
+  C, C kontert D, D kontert E, E kontert A).
+- **Pattern-Zustände = Aktionen 1:1.** Jeder Automat hat jetzt 5 Pattern-
+  Zustände (vorher 3) in derselben zyklischen Reihenfolge wie die Aktionen.
+- **Drei Ergebnis-Stufen pro Aktion, abhängig vom aktuellen festen
+  Pattern-Zustand:**
+  1. **Großer Gewinn:** wenn der aktuelle Zustand genau der ist, den die
+     gewählte Aktion kontert (1 von 5 Zuständen)
+  2. **Verlust:** wenn der aktuelle Zustand genau der ist, der die gewählte
+     Aktion kontert, also die Vorgänger-Aktion im Zyklus (1 von 5 Zuständen)
+  3. **Einfacher Treffer:** bei jedem der übrigen 3 Zustände — spürbar
+     kleiner als der große Gewinn, aber immer positiv
+  - Kein "Fehlschlag/Erfolg" mehr als Konzept — jede Aktion trifft immer,
+    nur die Payout-Spanne unterscheidet sich (groß positiv / normal positiv /
+    negativ) je nach Zustandstreffer. Verlust ist ein eigener, fester Payout-
+    Bereich (z. B. -8 bis -12), kein Prozentabzug vom aktuellen Punktestand.
+- **Kein sicherer Hafen:** Ohne jede Vorschau sind alle 5 Aktionen exakt
+  gleichwertig (je 1 Gewinn-, 1 Verlust-, 3 Neutral-Zustand) — die gesamte
+  Entscheidungsqualität hängt an der Vorschau auf die feste Sequenz.
+- **Blind-Erwartungswert-Garantie (verbindlich, automatisiert zu prüfen):**
+  Für jede Aktion jedes Automaten muss unter der TATSÄCHLICHEN (nicht
+  angenommenen) stationären Verteilung des Patterns gelten:
+  `EV = P(Gewinn-Zustand)·Großer_Gewinn + P(Verlust-Zustand)·Verlust + P(Rest)·Einfacher_Treffer > 0`.
+  Blindes Spiel muss im Erwartungswert immer positiv bleiben; Vorschau
+  beschleunigt nur, sie ist keine Voraussetzung für Netto-Fortschritt. Sobald
+  der Spieler den aktuellen Zustand sieht, kann er den Verlust-Fall trivial
+  vermeiden (jede andere Aktion als die gerade gekonterte wählen) — Verlust
+  passiert nur bei bewusstem blindem Risiko für den großen Gewinn, nicht
+  durch Pech bei aufmerksamem Spiel.
+
+- **Zwei-Achsen-Vorschau statt binärem "bekannt/unbekannt" (Ergänzung
+  2026-07-09):** Statt eine Position entweder exakt zu zeigen oder komplett
+  zu verbergen, gibt es eine Präzisions-Stufe `p` (0 bis n−1, bei n=5 also
+  0–4). Bei Präzision `p` werden `p` garantiert falsche Kandidaten aus den
+  n möglichen Zuständen ausgeschlossen ("definitiv nicht X, nicht Y, ..."),
+  der wahre Zustand bleibt unter den verbleibenden `n−p` Kandidaten
+  versteckt. `p=0` = komplett blind, `p=n−1` = nur noch 1 Kandidat übrig =
+  Zustand de facto bekannt. Separat davon bestimmt die Sichtweite `d` (1 bis
+  n), für wie viele der kommenden Positionen überhaupt eine (durch `p`
+  bestimmte) Teilinformation gezeigt wird. Beides sind unabhängige,
+  wiederholt kaufbare, im Preis steigende automaten-interne Upgrade-Leitern
+  (ticket-finanziert, siehe 4.1a) — `p` gilt einheitlich für alle sichtbaren
+  Positionen, keine dritte Dimension "Präzision variiert mit Tiefe". Die
+  ausgeschlossenen Kandidaten pro Position werden EINMAL bei Run-Start (wenn
+  auch die feste Zug-Sequenz feststeht) ermittelt und bleiben für den Rest
+  des Runs stabil, keine erneute Zufallsziehung bei wiederholtem Hinsehen.
+  Ersetzt die einfache "reveal genau `d` Positionen exakt"-Vorschau aus dem
+  ersten 4.1b-Entwurf.
+
 Technische Details/Begründung: siehe STATUS.md, Abschnitt zur Kernmechanik-
-Revision. Automaten-spezifische Bezeichnungen der zwei harten Aktionen (statt
-generischer "safe/balanced/risky"-Labels) sind Teil dieser Revision und lösen
-den zuvor in STATUS.md notierten Redundanz-Befund (alle vier Automaten fühlten
-sich mechanisch gleich an).
+Revision v2.
 
 ### 4.2 Automat 1 — "Greed Run" (Pac-Man-Twist)
 
