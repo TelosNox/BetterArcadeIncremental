@@ -16,36 +16,29 @@ import {
     getEntryPointMachine,
     getExcludedCandidates,
     getFinalMilestoneThreshold,
+    getMachineAttendantRate,
     getMachineConfig,
     getMachineUpgrade,
     getMachineUpgradeCost,
     getPreviewDepth,
     getPreviewPrecision,
+    getReachedMilestones,
+    getStateColor,
     getUpgradeCostToMilestoneRatio,
+    isFinalMilestoneReached,
     resolveMachineAction,
+    STATE_COLORS,
 } from './machines.config';
 import type { MachineConfig } from '../engine/types';
 import { PatternEngine } from '../engine/PatternEngine';
-import { PushYourLuckRun } from '../engine/PushYourLuckEngine';
+import { computeStationaryDistribution } from '../engine/AttendantEngine';
 
-// Stationaere Verteilung einer (ergodischen) Markov-Kette per
-// Power-Iteration -- reines Test-Werkzeug fuer die Blind-EV-Garantie
-// (STATUS.md Phase 7c Punkt 4), NICHT Teil der Produktions-/Engine-Logik.
+// Stationaere Verteilung einer (ergodischen) Markov-Kette per Power-Iteration
+// -- seit Phase 7d Produktionscode (AttendantEngine.ts::
+// computeStationaryDistribution, wird zur Laufzeit fuer die Attendant-
+// Ertragsrate gebraucht), hier nur noch importiert statt dupliziert.
 function stationaryDistribution(machine: MachineConfig): Record<string, number> {
-    const { states, transitions } = machine.pattern;
-    let dist: Record<string, number> = Object.fromEntries(states.map((s) => [s, 1 / states.length]));
-
-    for (let step = 0; step < 3000; step += 1) {
-        const next: Record<string, number> = Object.fromEntries(states.map((s) => [s, 0]));
-        for (const from of states) {
-            const targets = transitions[from] ?? {};
-            for (const [to, probability] of Object.entries(targets)) {
-                next[to] += dist[from] * probability;
-            }
-        }
-        dist = next;
-    }
-    return dist;
+    return computeStationaryDistribution(machine.pattern);
 }
 
 function mean([a, b]: readonly [number, number]): number {
@@ -108,8 +101,14 @@ describe('machines.config', () => {
             expect(() => new PatternEngine(machine.pattern)).not.toThrow();
         });
 
-        it.each(MACHINES)('$name: Milestones sind gueltig (PushYourLuckRun wirft nicht)', (machine) => {
-            expect(() => new PushYourLuckRun(machine.milestones)).not.toThrow();
+        it.each(MACHINES)('$name: Milestones sind gueltig (nicht-leer, positiv, strikt steigend)', (machine) => {
+            expect(machine.milestones.length).toBeGreaterThan(0);
+            for (let i = 0; i < machine.milestones.length; i += 1) {
+                expect(machine.milestones[i].threshold).toBeGreaterThan(0);
+                if (i > 0) {
+                    expect(machine.milestones[i].threshold).toBeGreaterThan(machine.milestones[i - 1].threshold);
+                }
+            }
         });
 
         it.each(MACHINES)('$name: hat genau 5 Pattern-Zustaende UND genau 5 Aktionen', (machine) => {
@@ -364,6 +363,97 @@ describe('machines.config', () => {
             expect(getFinalMilestoneThreshold(TRAP_TUNNELS)).toBe(120);
             expect(getFinalMilestoneThreshold(BEAT_LEDGER)).toBe(140);
             expect(getFinalMilestoneThreshold(CHAMPIONS_LEDGER)).toBe(180);
+        });
+    });
+
+    describe('ticketYieldFactor (Phase 7d, Normalisierungs-Konstante)', () => {
+        it('ist fuer Greed Run genau 1.0 (Skalierungs-Basis)', () => {
+            expect(GREED_RUN.ticketYieldFactor).toBe(1.0);
+        });
+
+        it('ist positiv und sinkt streng monoton mit steigender Automaten-Skalierung', () => {
+            const factors = MACHINES.map((m) => m.ticketYieldFactor);
+            for (const f of factors) {
+                expect(f).toBeGreaterThan(0);
+            }
+            expect(factors[0]).toBeGreaterThan(factors[1]);
+            expect(factors[1]).toBeGreaterThan(factors[2]);
+            expect(factors[2]).toBeGreaterThan(factors[3]);
+        });
+
+        it('daempft die Rohzahlen-Differenz, gleicht sie aber NICHT vollstaendig aus (spaetere Automaten tragen absolut mehr bei)', () => {
+            // Ungedaempfter Rohzahlen-Vorsprung von Champion's Ledger gegenueber
+            // Greed Run (mittlerer payoutBig): ~1.8x. Mit Normalisierung sollte
+            // der EFFEKTIVE Vorsprung (Rohzahlen * Faktor) kleiner, aber > 1 sein.
+            const rawRatio = mean(CHAMPIONS_LEDGER.actions[0].payoutBig) / mean(GREED_RUN.actions[0].payoutBig);
+            const dampedRatio = rawRatio * (CHAMPIONS_LEDGER.ticketYieldFactor / GREED_RUN.ticketYieldFactor);
+            expect(dampedRatio).toBeLessThan(rawRatio);
+            expect(dampedRatio).toBeGreaterThan(1);
+        });
+    });
+
+    describe('STATE_COLORS / getStateColor (Phase 7e, Barrierefreiheits-Grundsatz)', () => {
+        it('enthaelt genau N_STATES unterscheidbare Farben', () => {
+            expect(STATE_COLORS).toHaveLength(N_STATES);
+            expect(new Set(STATE_COLORS).size).toBe(N_STATES);
+        });
+
+        it('getStateColor liefert dieselbe Farbe fuer denselben Index, konsistent ueber alle Automaten', () => {
+            expect(getStateColor(0)).toBe(STATE_COLORS[0]);
+            expect(getStateColor(2)).toBe(STATE_COLORS[2]);
+        });
+
+        it('getStateColor wrapt bei Indizes ausserhalb des Bereichs', () => {
+            expect(getStateColor(N_STATES)).toBe(STATE_COLORS[0]);
+            expect(getStateColor(-1)).toBe(STATE_COLORS[N_STATES - 1]);
+        });
+    });
+
+    describe('getReachedMilestones / isFinalMilestoneReached (Phase 7e, ersetzt PushYourLuckRun)', () => {
+        it('liefert keine Meilensteine bei peakScore 0', () => {
+            expect(getReachedMilestones(GREED_RUN, 0)).toEqual([]);
+            expect(isFinalMilestoneReached(GREED_RUN, 0)).toBe(false);
+        });
+
+        it('liefert alle Meilensteine, deren Schwelle peakScore erreicht hat', () => {
+            const reached = getReachedMilestones(GREED_RUN, 55);
+            expect(reached.map((m) => m.threshold)).toEqual([20, 50]);
+        });
+
+        it('isFinalMilestoneReached wird erst beim letzten Meilenstein true', () => {
+            expect(isFinalMilestoneReached(GREED_RUN, 99)).toBe(false);
+            expect(isFinalMilestoneReached(GREED_RUN, 100)).toBe(true);
+        });
+    });
+
+    describe('getMachineAttendantRate', () => {
+        it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
+            const rate = getMachineAttendantRate(GREED_RUN, 0, [], 1);
+            expect(rate.machinePointsPerSecond).toBe(0);
+            expect(rate.hallTicketsPerSecond).toBe(0);
+        });
+
+        it('liefert eine positive Rate bei voller Musterkenntnis', () => {
+            const rate = getMachineAttendantRate(GREED_RUN, 1, [], 1);
+            expect(rate.machinePointsPerSecond).toBeGreaterThan(0);
+            expect(rate.hallTicketsPerSecond).toBeGreaterThan(0);
+        });
+
+        it('hallTicketsPerSecond skaliert mit ticketYieldFactor und dem hallenweiten ticketYieldRate-Parameter', () => {
+            const base = getMachineAttendantRate(GREED_RUN, 1, [], 1);
+            const doubled = getMachineAttendantRate(GREED_RUN, 1, [], 2);
+            expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
+        });
+
+        it('steigt mit gekauften Vorschau-Upgrades (mehr Tiefe/Praezision fuer den Attendant nutzbar)', () => {
+            const withoutUpgrades = getMachineAttendantRate(GREED_RUN, 1, [], 1);
+            const withUpgrades = getMachineAttendantRate(
+                GREED_RUN,
+                1,
+                [...GREED_RUN.depthUpgrades.map((u) => u.id), ...GREED_RUN.precisionUpgrades.map((u) => u.id)],
+                1,
+            );
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
         });
     });
 });

@@ -22,6 +22,20 @@ Diese Datei hier dupliziert deren Inhalt nicht. Bei Widerspruch zwischen dieser 
 
 Kernlogik (`/src/engine`) kennt weder Phaser noch React. Phaser (`/src/game`) und React (`/src/ui`) lesen/schreiben nur über die Engine-Schnittstelle. Automaten-spezifische Werte gehören in `/src/data/machines.config.ts`, nicht hart in Szenen-Code. Details: `docs/implementation-plan.md` Abschnitt 2.
 
+## UI-Grundsatz: Barrierefreiheit bei Farbcodierung
+
+Gilt für JEDE Mechanik, die Zustände/Aktionen/Kategorien über Farbe
+unterscheidbar macht (nicht nur Phase 7e) — dauerhaft zu beachten, nicht nur
+einmalig abzuhaken:
+
+- Farbpaletten farbenblind-sicher wählen (z. B. Okabe-Ito-Palette statt
+  beliebiger Rot/Grün-Kontraste).
+- Farbe ist niemals das EINZIGE Unterscheidungsmerkmal. Immer mit einem
+  zweiten, farbunabhängigen Merkmal koppeln: Symbol/Icon-Form, Position/
+  Anordnung, Buchstabe/Nummer, Muster.
+- Bei neuen Mechaniken mit Farbcodierung diesen Grundsatz genauso prüfen wie
+  die Checkliste in `docs/design-toolbox.md` Abschnitt 4.
+
 ## Befehle
 
 ```

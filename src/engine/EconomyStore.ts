@@ -1,21 +1,23 @@
 import Decimal, { type DecimalSource } from 'break_infinity.js';
-import { CURRENT_SAVE_VERSION, type EngineState } from './types';
+import { CURRENT_SAVE_VERSION, type AttendantPoolState, type EngineState } from './types';
 import { EventEmitter, type EngineEvents } from './events';
 
-// Tickets, Credits, Umrechnung, Hallen-Upgrades.
-// Waehrungsfluss laut game-spec.md 3.1:
-//   Automat (Skill-Score) -> Tickets -> Credits (Hallen-Waehrung)
-//   Credits -> Hallen-Upgrades / Attendant-Training
-//
-// Die Umrechnungsrate Tickets->Credits ist selbst ein Hallen-Upgrade
-// (siehe hall.config.ts, Phase 7) und wird daher hier als Parameter
-// uebergeben statt hart codiert.
+// Tickets (hallenweit), Automaten-Punkte (pro Automat), Hallen-Upgrades.
+// Waehrungsfluss laut game-spec.md 3.1 (Phase 7d, ersetzt das fruehere
+// Tickets->Credits-Modell VOLLSTAENDIG):
+//   Automat (Skill-Score) -> gleichzeitig zwei Ausgaben pro Aktion:
+//     1. Automaten-Punkte (lokal pro Automat, NICHT uebertragbar)
+//     2. Tickets (hallenweit gepoolt) -- die EINZIGE Hallen-Waehrung
+// Kein manueller Umwandlungsschritt mehr zwischen zwei Waehrungen (das
+// war "Credits") -- siehe STATUS.md, Abschnitt Phase 7d.
 
 function assertNonNegative(amount: Decimal, context: string): void {
     if (amount.lt(0)) {
         throw new RangeError(`${context}: Betrag darf nicht negativ sein (${amount.toString()})`);
     }
 }
+
+const EMPTY_POOL: AttendantPoolState = { machinePoints: 0, hallTickets: 0, msSincePayout: 0 };
 
 export class EconomyStore {
     readonly events = new EventEmitter<EngineEvents>();
@@ -28,13 +30,16 @@ export class EconomyStore {
     static createInitialState(): EngineState {
         return {
             saveVersion: CURRENT_SAVE_VERSION,
-            credits: new Decimal(0),
-            ticketsByMachine: {},
+            tickets: new Decimal(0),
+            machinePoints: {},
+            machinePeakScore: {},
             unlockedMachines: [],
             attendantKnowledge: {},
             hallUpgrades: [],
             completedMachines: [],
             machineUpgrades: {},
+            attendantPools: {},
+            lastAttendantUpdate: Date.now(),
         };
     }
 
@@ -42,81 +47,104 @@ export class EconomyStore {
         return this.state;
     }
 
-    getCredits(): Decimal {
-        return this.state.credits;
+    // --- Tickets (hallenweit, ersetzt "Credits") ---------------------------
+
+    getHallTickets(): Decimal {
+        return this.state.tickets;
     }
 
-    getTickets(machineId: string): Decimal {
-        return this.state.ticketsByMachine[machineId] ?? new Decimal(0);
-    }
-
-    addTickets(machineId: string, amount: DecimalSource): void {
+    addHallTickets(amount: DecimalSource): void {
         const value = Decimal.fromValue(amount);
-        assertNonNegative(value, 'addTickets');
+        assertNonNegative(value, 'addHallTickets');
 
-        const next = this.getTickets(machineId).plus(value);
-        this.state.ticketsByMachine[machineId] = next;
-        this.events.emit('tickets-changed', { machineId, tickets: next });
+        this.state.tickets = this.state.tickets.plus(value);
+        this.events.emit('hall-tickets-changed', { tickets: this.state.tickets });
     }
 
-    // Gibt false zurueck (ohne Mutation), wenn nicht genug Tickets DIESES
-    // Automaten vorhanden sind. Symmetrisch zu spendCredits, aber pro
-    // machineId -- fuer automaten-interne Upgrades (Phase 7b, bezahlt mit
-    // den eigenen Tickets statt Hallen-Credits, siehe purchaseMachineUpgrade).
-    spendTickets(machineId: string, amount: DecimalSource): boolean {
+    // Gibt false zurueck (ohne Mutation), wenn nicht genug hallenweite
+    // Tickets vorhanden sind.
+    spendHallTickets(amount: DecimalSource): boolean {
         const value = Decimal.fromValue(amount);
-        assertNonNegative(value, 'spendTickets');
+        assertNonNegative(value, 'spendHallTickets');
 
-        const current = this.getTickets(machineId);
+        if (this.state.tickets.lt(value)) {
+            return false;
+        }
+
+        this.state.tickets = this.state.tickets.minus(value);
+        this.events.emit('hall-tickets-changed', { tickets: this.state.tickets });
+        return true;
+    }
+
+    // --- Automaten-Punkte (lokal pro Automat, vorher "ticketsByMachine") ---
+
+    getMachinePoints(machineId: string): Decimal {
+        return this.state.machinePoints[machineId] ?? new Decimal(0);
+    }
+
+    // Hoechster je erreichter machinePoints-Wert dieses Automaten (Phase 7e,
+    // siehe types.ts::EngineState.machinePeakScore) -- steigt nie durch
+    // Ausgeben oder einen Verlust, treibt Meilenstein-Pips/"Durchgespielt".
+    getMachinePeakScore(machineId: string): Decimal {
+        return this.state.machinePeakScore[machineId] ?? new Decimal(0);
+    }
+
+    private bumpMachinePeakScore(machineId: string, value: Decimal): void {
+        if (value.gt(this.getMachinePeakScore(machineId))) {
+            this.state.machinePeakScore[machineId] = value;
+            this.events.emit('machine-peak-score-changed', { machineId, peak: value });
+        }
+    }
+
+    // Nicht-negative Gutschrift (z. B. Attendant-Ertragsrate, siehe
+    // economy.ts::tickAttendants). Aktualisiert bei Bedarf auch den Peak.
+    addMachinePoints(machineId: string, amount: DecimalSource): void {
+        const value = Decimal.fromValue(amount);
+        assertNonNegative(value, 'addMachinePoints');
+
+        const next = this.getMachinePoints(machineId).plus(value);
+        this.state.machinePoints[machineId] = next;
+        this.events.emit('machine-points-changed', { machineId, points: next });
+        this.bumpMachinePeakScore(machineId, next);
+    }
+
+    // Gibt false zurueck (ohne Mutation), wenn nicht genug Automaten-Punkte
+    // DIESES Automaten vorhanden sind -- fuer automaten-interne Upgrades
+    // (Phase 7b, bezahlt mit den eigenen Punkten statt Hallen-Tickets, siehe
+    // purchaseMachineUpgrade). Senkt bewusst NIE den Peak (siehe
+    // getMachinePeakScore-Kommentar) -- Ausgeben darf Meilenstein-Fortschritt
+    // nicht rueckgaengig machen.
+    spendMachinePoints(machineId: string, amount: DecimalSource): boolean {
+        const value = Decimal.fromValue(amount);
+        assertNonNegative(value, 'spendMachinePoints');
+
+        const current = this.getMachinePoints(machineId);
         if (current.lt(value)) {
             return false;
         }
 
         const next = current.minus(value);
-        this.state.ticketsByMachine[machineId] = next;
-        this.events.emit('tickets-changed', { machineId, tickets: next });
+        this.state.machinePoints[machineId] = next;
+        this.events.emit('machine-points-changed', { machineId, points: next });
         return true;
     }
 
-    // Wandelt alle gebankten Tickets eines Automaten zum uebergebenen Kurs
-    // in Credits um und setzt den Ticket-Stand des Automaten zurueck.
-    // Gibt die gutgeschriebene Credit-Menge zurueck.
-    convertTicketsToCredits(machineId: string, rate: DecimalSource): Decimal {
-        const rateValue = Decimal.fromValue(rate);
-        assertNonNegative(rateValue, 'convertTicketsToCredits: rate');
-
-        const tickets = this.getTickets(machineId);
-        const gained = tickets.times(rateValue);
-
-        this.state.ticketsByMachine[machineId] = new Decimal(0);
-        this.state.credits = this.state.credits.plus(gained);
-
-        this.events.emit('tickets-changed', { machineId, tickets: new Decimal(0) });
-        this.events.emit('credits-changed', { credits: this.state.credits });
-
-        return gained;
-    }
-
-    addCredits(amount: DecimalSource): void {
-        const value = Decimal.fromValue(amount);
-        assertNonNegative(value, 'addCredits');
-
-        this.state.credits = this.state.credits.plus(value);
-        this.events.emit('credits-changed', { credits: this.state.credits });
-    }
-
-    // Gibt false zurueck (ohne Mutation), wenn nicht genug Credits vorhanden sind.
-    spendCredits(amount: DecimalSource): boolean {
-        const value = Decimal.fromValue(amount);
-        assertNonNegative(value, 'spendCredits');
-
-        if (this.state.credits.lt(value)) {
-            return false;
-        }
-
-        this.state.credits = this.state.credits.minus(value);
-        this.events.emit('credits-changed', { credits: this.state.credits });
-        return true;
+    // Signierte Gutschrift/Abzug (Phase 7e, ersetzt PushYourLuckRun.
+    // resolveAction+bank): jede aufgeloeste Aktion verbucht ihren Payout
+    // SOFORT und DAUERHAFT hier -- kein ephemerer Run mehr, kein Banking.
+    // `delta` kann negativ sein (Verlust-Fall des zyklischen Aktionsmodells,
+    // siehe machines.config.ts::resolveMachineAction) -- der resultierende
+    // Punktestand wird bei 0 geklemmt (uebernommen aus der alten
+    // PushYourLuckRun-Logik: ein Verlust kann Fortschritt bis auf 0
+    // zunichtemachen, aber keine "Schulden" erzeugen). Der Peak (siehe oben)
+    // wird dabei nie gesenkt, auch wenn der aktuelle Wert durch einen
+    // Verlust sinkt -- das ist die "Sticky"-Eigenschaft, die Meilenstein-
+    // Fortschritt/"Durchgespielt" unumkehrbar macht.
+    applyMachineScoreDelta(machineId: string, delta: number): void {
+        const next = this.getMachinePoints(machineId).plus(delta).clampMin(0);
+        this.state.machinePoints[machineId] = next;
+        this.events.emit('machine-points-changed', { machineId, points: next });
+        this.bumpMachinePeakScore(machineId, next);
     }
 
     isMachineUnlocked(machineId: string): boolean {
@@ -148,12 +176,12 @@ export class EconomyStore {
     }
 
     // Kauft ein Hallen-Upgrade genau einmal. Gibt false zurueck, wenn es
-    // bereits gekauft wurde oder die Credits nicht ausreichen (keine Mutation).
+    // bereits gekauft wurde oder die Tickets nicht ausreichen (keine Mutation).
     purchaseHallUpgrade(upgradeId: string, cost: DecimalSource): boolean {
         if (this.hasHallUpgrade(upgradeId)) {
             return false;
         }
-        if (!this.spendCredits(cost)) {
+        if (!this.spendHallTickets(cost)) {
             return false;
         }
 
@@ -164,10 +192,11 @@ export class EconomyStore {
 
     // Automaten-interne Upgrades (Phase 7b): analog zu hallUpgrades/
     // hasHallUpgrade/purchaseHallUpgrade, aber PRO AUTOMAT gespeichert und
-    // mit den eigenen Tickets DIESES Automaten bezahlt (spendTickets statt
-    // spendCredits) -- folgt derselben Pro-Automat-Struktur wie
-    // attendantKnowledge (Record<string, ...> keyed by machineId), nur mit
-    // einer Liste gekaufter Upgrade-ids als Wert statt einer einzelnen Zahl.
+    // mit den eigenen Automaten-Punkten DIESES Automaten bezahlt
+    // (spendMachinePoints statt spendHallTickets) -- folgt derselben
+    // Pro-Automat-Struktur wie attendantKnowledge (Record<string, ...> keyed
+    // by machineId), nur mit einer Liste gekaufter Upgrade-ids als Wert
+    // statt einer einzelnen Zahl.
     getMachineUpgrades(machineId: string): readonly string[] {
         return this.state.machineUpgrades[machineId] ?? [];
     }
@@ -177,13 +206,13 @@ export class EconomyStore {
     }
 
     // Kauft ein automaten-internes Upgrade genau einmal, bezahlt mit den
-    // Tickets DIESES Automaten. Gibt false zurueck, wenn es bereits gekauft
-    // wurde oder die Tickets nicht ausreichen (keine Mutation).
+    // Automaten-Punkten DIESES Automaten. Gibt false zurueck, wenn es
+    // bereits gekauft wurde oder die Punkte nicht ausreichen (keine Mutation).
     purchaseMachineUpgrade(machineId: string, upgradeId: string, cost: DecimalSource): boolean {
         if (this.hasMachineUpgrade(machineId, upgradeId)) {
             return false;
         }
-        if (!this.spendTickets(machineId, cost)) {
+        if (!this.spendMachinePoints(machineId, cost)) {
             return false;
         }
 
@@ -198,12 +227,33 @@ export class EconomyStore {
     }
 
     // Musterkenntnis wird hier nur gespeichert/geklemmt (0-1). Wie sie steigt
-    // (manuelles Spielen primaer, Credits-Training sekundaer) regelt die
+    // (manuelles Spielen primaer, Tickets-Training sekundaer) regelt die
     // AttendantEngine (Phase 5), nicht der EconomyStore.
     setAttendantKnowledge(machineId: string, value: number): void {
         const clamped = Math.min(1, Math.max(0, value));
         this.state.attendantKnowledge[machineId] = clamped;
         this.events.emit('attendant-knowledge-changed', { machineId, knowledge: clamped });
+    }
+
+    // --- Attendant-Rate-Modell (Phase 7d) -----------------------------------
+    // Reiner State-Zugriff, keine Rate-/Pool-MATHEMATIK hier (die lebt als
+    // reine, testbare Funktionen in AttendantEngine.ts -- Architektur-
+    // Kurzregel: EconomyStore speichert nur, rechnet nicht).
+
+    getAttendantPool(machineId: string): AttendantPoolState {
+        return this.state.attendantPools[machineId] ?? EMPTY_POOL;
+    }
+
+    setAttendantPool(machineId: string, pool: AttendantPoolState): void {
+        this.state.attendantPools[machineId] = pool;
+    }
+
+    getLastAttendantUpdate(): number {
+        return this.state.lastAttendantUpdate;
+    }
+
+    setLastAttendantUpdate(timestampMs: number): void {
+        this.state.lastAttendantUpdate = timestampMs;
     }
 
     // Ersetzt den kompletten State, z. B. nach SaveSystem.load().

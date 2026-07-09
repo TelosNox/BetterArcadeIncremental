@@ -4,32 +4,32 @@ import { MACHINES } from './machines.config';
 import {
     ATTENDANT_SPEED_UPGRADES,
     BASE_ATTENDANT_TRAINING_MULTIPLIER,
-    BASE_TICKET_CONVERSION_RATE,
+    BASE_TICKET_YIELD_RATE,
     HALL_UPGRADES,
     MACHINE_UNLOCK_UPGRADES,
-    TICKET_CONVERSION_UPGRADES,
+    TICKET_YIELD_UPGRADES,
     getAttendantTrainingMultiplier,
     getEffectiveTrainingGain,
     getMachineUnlockUpgrade,
-    getTicketConversionRate,
+    getTicketYieldRate,
 } from './hall.config';
 
 describe('hall.config', () => {
-    describe('Ticket-Umrechnungskurs (ersetzt TICKET_CONVERSION_RATE)', () => {
+    describe('Ticket-Ertragsrate (ersetzt Ticket->Credits-Umrechnungskurs)', () => {
         it('liefert die Basis-Rate ohne gekaufte Upgrades', () => {
-            expect(getTicketConversionRate([])).toBe(BASE_TICKET_CONVERSION_RATE);
+            expect(getTicketYieldRate([])).toBe(BASE_TICKET_YIELD_RATE);
         });
 
         it('steigt mit jeder gekauften Stufe', () => {
-            const rates = TICKET_CONVERSION_UPGRADES.map((upgrade) => getTicketConversionRate([upgrade.id]));
+            const rates = TICKET_YIELD_UPGRADES.map((upgrade) => getTicketYieldRate([upgrade.id]));
             const sorted = [...rates].sort((a, b) => a - b);
             expect(rates).toEqual(sorted);
-            rates.forEach((rate) => expect(rate).toBeGreaterThan(BASE_TICKET_CONVERSION_RATE));
+            rates.forEach((rate) => expect(rate).toBeGreaterThan(BASE_TICKET_YIELD_RATE));
         });
 
         it('nimmt bei mehreren gekauften Stufen die hoechste, unabhaengig von der Reihenfolge', () => {
-            const [tier1, tier2] = TICKET_CONVERSION_UPGRADES;
-            expect(getTicketConversionRate([tier2.id, tier1.id])).toBe(getTicketConversionRate([tier1.id, tier2.id]));
+            const [tier1, tier2] = TICKET_YIELD_UPGRADES;
+            expect(getTicketYieldRate([tier2.id, tier1.id])).toBe(getTicketYieldRate([tier1.id, tier2.id]));
         });
     });
 
@@ -87,7 +87,7 @@ describe('hall.config', () => {
     describe('HALL_UPGRADES', () => {
         it('enthaelt alle Upgrades aller drei Kategorien mit eindeutigen ids', () => {
             expect(HALL_UPGRADES).toHaveLength(
-                TICKET_CONVERSION_UPGRADES.length + MACHINE_UNLOCK_UPGRADES.length + ATTENDANT_SPEED_UPGRADES.length,
+                TICKET_YIELD_UPGRADES.length + MACHINE_UNLOCK_UPGRADES.length + ATTENDANT_SPEED_UPGRADES.length,
             );
             const ids = HALL_UPGRADES.map((upgrade) => upgrade.id);
             expect(new Set(ids).size).toBe(ids.length);

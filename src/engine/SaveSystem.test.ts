@@ -36,9 +36,13 @@ class MemoryStorage implements Storage {
 function stateWithSomeData(): EngineState {
     return {
         saveVersion: CURRENT_SAVE_VERSION,
-        credits: new Decimal(1234.5),
-        ticketsByMachine: {
+        tickets: new Decimal(1234.5),
+        machinePoints: {
             'greed-run': new Decimal(42),
+            'trap-tunnels': new Decimal(1e50),
+        },
+        machinePeakScore: {
+            'greed-run': new Decimal(50),
             'trap-tunnels': new Decimal(1e50),
         },
         unlockedMachines: ['greed-run', 'trap-tunnels'],
@@ -46,6 +50,8 @@ function stateWithSomeData(): EngineState {
         hallUpgrades: ['faster-conversion'],
         completedMachines: ['greed-run'],
         machineUpgrades: { 'greed-run': ['visibility-1'] },
+        attendantPools: { 'greed-run': { machinePoints: 1.5, hallTickets: 0.5, msSincePayout: 1200 } },
+        lastAttendantUpdate: 1_700_000_000_000,
     };
 }
 
@@ -56,13 +62,16 @@ describe('serializeState / deserializeState', () => {
         const restored = deserializeState(serializeState(original));
 
         expect(restored.saveVersion).toBe(original.saveVersion);
-        expect(restored.credits.eq(original.credits)).toBe(true);
-        expect(restored.ticketsByMachine['greed-run'].eq(42)).toBe(true);
+        expect(restored.tickets.eq(original.tickets)).toBe(true);
+        expect(restored.machinePoints['greed-run'].eq(42)).toBe(true);
+        expect(restored.machinePeakScore['greed-run'].eq(50)).toBe(true);
         expect(restored.unlockedMachines).toEqual(original.unlockedMachines);
         expect(restored.attendantKnowledge).toEqual(original.attendantKnowledge);
         expect(restored.hallUpgrades).toEqual(original.hallUpgrades);
         expect(restored.completedMachines).toEqual(original.completedMachines);
         expect(restored.machineUpgrades).toEqual(original.machineUpgrades);
+        expect(restored.attendantPools).toEqual(original.attendantPools);
+        expect(restored.lastAttendantUpdate).toBe(original.lastAttendantUpdate);
     });
 
     it('erhaelt Zahlen jenseits von Number.MAX_SAFE_INTEGER ueber den Round-Trip', () => {
@@ -70,7 +79,7 @@ describe('serializeState / deserializeState', () => {
 
         const restored = deserializeState(serializeState(original));
 
-        expect(restored.ticketsByMachine['trap-tunnels'].eq(new Decimal(1e50))).toBe(true);
+        expect(restored.machinePoints['trap-tunnels'].eq(new Decimal(1e50))).toBe(true);
     });
 
     it('wirft bei kaputtem JSON', () => {
@@ -85,6 +94,12 @@ describe('serializeState / deserializeState', () => {
         const future = { ...stateWithSomeData(), saveVersion: CURRENT_SAVE_VERSION + 1 };
 
         expect(() => deserializeState(serializeState(future))).toThrow();
+    });
+
+    it('wirft bei einer AELTEREN saveVersion (Phase 7d/7e: bewusst KEINE Migration, siehe STATUS.md)', () => {
+        const old = { ...stateWithSomeData(), saveVersion: CURRENT_SAVE_VERSION - 1 };
+
+        expect(() => deserializeState(serializeState(old))).toThrow();
     });
 });
 
@@ -103,13 +118,51 @@ describe('SaveSystem', () => {
         const loaded = saveSystem.load();
 
         expect(loaded).not.toBeNull();
-        expect(loaded!.credits.eq(state.credits)).toBe(true);
+        expect(loaded!.tickets.eq(state.tickets)).toBe(true);
         expect(loaded!.unlockedMachines).toEqual(state.unlockedMachines);
     });
 
     it('load() gibt bei korruptem Inhalt null zurueck statt zu werfen', () => {
         const storage = new MemoryStorage();
         storage.setItem('arcade-incremental-save', 'das ist kein json');
+        const saveSystem = new SaveSystem(storage);
+
+        expect(saveSystem.load()).toBeNull();
+    });
+
+    it('load() gibt bei einem alten (Phase<7d) Speicherstand null zurueck -- sauberer Reset statt Absturz', () => {
+        const storage = new MemoryStorage();
+        const legacyState = {
+            saveVersion: 1,
+            credits: '100',
+            ticketsByMachine: { 'greed-run': '5' },
+            unlockedMachines: [],
+            attendantKnowledge: {},
+            hallUpgrades: [],
+            completedMachines: [],
+            machineUpgrades: {},
+        };
+        storage.setItem('arcade-incremental-save', JSON.stringify(legacyState));
+        const saveSystem = new SaveSystem(storage);
+
+        expect(saveSystem.load()).toBeNull();
+    });
+
+    it('load() gibt bei einem Phase-7d-Speicherstand (saveVersion 2, ohne machinePeakScore) null zurueck', () => {
+        const storage = new MemoryStorage();
+        const phase7dState = {
+            saveVersion: 2,
+            tickets: '100',
+            machinePoints: { 'greed-run': '5' },
+            unlockedMachines: [],
+            attendantKnowledge: {},
+            hallUpgrades: [],
+            completedMachines: [],
+            machineUpgrades: {},
+            attendantPools: {},
+            lastAttendantUpdate: Date.now(),
+        };
+        storage.setItem('arcade-incremental-save', JSON.stringify(phase7dState));
         const saveSystem = new SaveSystem(storage);
 
         expect(saveSystem.load()).toBeNull();
@@ -142,7 +195,7 @@ describe('SaveSystem', () => {
         const exported = saveSystem.exportToString(state);
         const imported = saveSystem.importFromString(exported);
 
-        expect(imported.credits.eq(state.credits)).toBe(true);
+        expect(imported.tickets.eq(state.tickets)).toBe(true);
     });
 
     it('importFromString wirft bei ungueltigem Text (Aufrufer entscheidet UI-Feedback)', () => {

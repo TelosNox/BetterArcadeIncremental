@@ -2,26 +2,30 @@ import type { UpgradeDef } from '../engine/types';
 import { TRAINING_KNOWLEDGE_GAIN } from '../engine/AttendantEngine';
 import { MACHINES } from './machines.config';
 
-// Hallen-Upgrades (Phase 7, implementation-plan.md Abschnitt 2/4).
+// Hallen-Upgrades (Phase 7, implementation-plan.md Abschnitt 2/4; Ticket-
+// Ertragsrate-Kategorie ueberarbeitet in Phase 7d, siehe STATUS.md).
 //
-// Ersetzt VOLLSTAENDIG die Platzhalter-Wirtschaft aus Phase 6 (PM-Vorgabe,
-// STATUS.md "PM-Entscheidungen", Punkt 1: "muss dort VOLLSTAENDIG durch
-// hall.config.ts ersetzt werden, nicht nur ergaenzt -- sonst existieren zwei
-// Wirtschaftssysteme parallel"):
-//   - `TICKET_CONVERSION_RATE = 1` (HallHub.tsx)      -> TICKET_CONVERSION_UPGRADES
-//   - `MACHINE_UNLOCK_COST` (machines.config.ts)       -> MACHINE_UNLOCK_UPGRADES
-// Die dritte Saeule ist neu in Phase 7 (game-spec.md 3.1 "Credits ->
-// Hallen-Upgrades -> verbessern Ticket-Rate & schalten neue Automaten frei",
-// implementation-plan.md Phase 7 "Hallen-Upgrades verbessern Ticket-
-// Umrechnung UND Attendant-Trainingsgeschwindigkeit"):
-//   - ATTENDANT_SPEED_UPGRADES (Cross-Layer-Feedback, Baukasten 1.14)
+// Drei Saeulen, alle bezahlt mit der EINEN hallenweiten Ticket-Waehrung
+// (Phase 7d, "Credits" entfaellt komplett):
+//   - TICKET_YIELD_UPGRADES (ersetzt TICKET_CONVERSION_UPGRADES/
+//     getTicketConversionRate aus Phase 7): direkter Multiplikator auf den
+//     Ticket-Ertrag pro Aktion, hallenweit, wirkt auf alle Automaten
+//     gleichzeitig (Cross-Layer-Feedback, Baukasten 1.14). Phase 7d loest
+//     damit die fruehere zweistufige "Tickets (pro Automat) -> Credits
+//     (Kurs) -> Hallen-Upgrades"-Kette durch eine Ebene weniger ab: ein
+//     Umrechnungskurs zwischen zwei Waehrungen, die nur nacheinander
+//     verwendet wurden, ist mathematisch identisch mit einer direkten
+//     Ertragsrate-Erhoehung in der Zielwaehrung (game-spec.md 3.1).
+//   - MACHINE_UNLOCK_UPGRADES (unveraendert gegenueber Phase 7, nur die
+//     Waehrung heisst jetzt "Tickets" statt "Credits")
+//   - ATTENDANT_SPEED_UPGRADES (unveraendert gegenueber Phase 7)
 //
-// UpgradeDef-Struktur kommt unveraendert aus src/engine/types.ts
-// (implementation-plan.md Abschnitt 3) -- diese Datei ist reine Daten plus
-// kleine reine Ableitungsfunktionen (wie getEffectiveFailureChance in
-// machines.config.ts), keine Engine-Aenderung. EconomyStore/AttendantEngine
-// bleiben unangetastet; UpgradePanel.tsx kauft ausschliesslich ueber die
-// bestehende `economyStore.purchaseHallUpgrade(id, cost)`-Schnittstelle.
+// UpgradeDef-Struktur kommt unveraendert aus src/engine/types.ts -- diese
+// Datei ist reine Daten plus kleine reine Ableitungsfunktionen, keine
+// Engine-Aenderung. EconomyStore/AttendantEngine bleiben unangetastet;
+// UpgradePanel.tsx kauft ausschliesslich ueber die bestehende
+// `economyStore.purchaseHallUpgrade(id, cost)`-Schnittstelle (spendet jetzt
+// intern Tickets statt Credits, siehe EconomyStore.ts).
 //
 // Konvention fuer alle drei Kategorien: jede Stufe traegt einen ABSOLUTEN
 // Wert (nicht additiv zur vorherigen Stufe). Die get*()-Funktionen unten
@@ -32,55 +36,58 @@ import { MACHINES } from './machines.config';
 // eine zusaetzliche "requires"-Sperre ist fuer den in game-spec.md 3.1/3.3
 // beschriebenen Umfang nicht noetig (kein Blocker, siehe STATUS.md).
 
-// --- 1. Ticket -> Credits Umrechnungskurs (ersetzt TICKET_CONVERSION_RATE) ---
+// --- 1. Ticket-Ertragsrate (ersetzt Ticket->Credits-Umrechnungskurs) -------
 //
-// Ohne jedes Upgrade bewusst SCHWAECHER als der bisherige Platzhalter (1.0),
-// damit die drei Stufen eine spuerbare, echte Verbesserung sind (sonst waere
-// das "Upgrade" nur ein Reskin eines bereits vorhandenen Werts).
-export const BASE_TICKET_CONVERSION_RATE = 0.5;
+// Basis 1.0 = kein Multiplikator (neutral) -- anders als der fruehere
+// Umrechnungskurs (Basis 0.5, siehe Phase 7), weil es jetzt keine
+// Zwischenwaehrung mehr gibt, die "abgewertet" gestartet werden muesste: der
+// Ticket-Ertrag selbst ist bereits der volle, direkte Ausdruck des Spiel-
+// Ergebnisses (siehe machines.config.ts::getMachineAttendantRate/
+// MachineScene.ts fuer die Anwendung). Kosten-Stufen unveraendert aus Phase 7
+// uebernommen (30/120/350) -- die relative Progression bleibt gleich
+// sinnvoll, exakte Zahlenbalance wird laut game-spec.md Abschnitt 6 iterativ
+// beim Playtesting getunt, nicht in dieser Phase neu simuliert.
+export const BASE_TICKET_YIELD_RATE = 1.0;
 
-export const TICKET_CONVERSION_UPGRADES: readonly UpgradeDef[] = [
+export const TICKET_YIELD_UPGRADES: readonly UpgradeDef[] = [
     {
-        id: 'ticket-conversion-1',
-        name: 'Wechselstube I',
-        description: 'Ticket->Credits-Kurs steigt von 0.5 auf 0.75 Credits pro Ticket.',
+        id: 'ticket-yield-1',
+        name: 'Kassenautomat I',
+        description: 'Ticket-Ertrag pro Aktion steigt auf das 1.5-fache (alle Automaten).',
         cost: 30,
-        effect: { type: 'ticketConversionRate', value: 0.75 },
+        effect: { type: 'ticketYieldRate', value: 1.5 },
     },
     {
-        id: 'ticket-conversion-2',
-        name: 'Wechselstube II',
-        description: 'Ticket->Credits-Kurs steigt auf 1.1 Credits pro Ticket.',
+        id: 'ticket-yield-2',
+        name: 'Kassenautomat II',
+        description: 'Ticket-Ertrag pro Aktion steigt auf das 2.25-fache (alle Automaten).',
         cost: 120,
-        effect: { type: 'ticketConversionRate', value: 1.1 },
+        effect: { type: 'ticketYieldRate', value: 2.25 },
     },
     {
-        id: 'ticket-conversion-3',
-        name: 'Wechselstube III',
-        description: 'Ticket->Credits-Kurs steigt auf 1.5 Credits pro Ticket.',
+        id: 'ticket-yield-3',
+        name: 'Kassenautomat III',
+        description: 'Ticket-Ertrag pro Aktion steigt auf das 3.0-fache (alle Automaten).',
         cost: 350,
-        effect: { type: 'ticketConversionRate', value: 1.5 },
+        effect: { type: 'ticketYieldRate', value: 3.0 },
     },
 ];
 
-export function getTicketConversionRate(ownedHallUpgrades: readonly string[]): number {
-    return TICKET_CONVERSION_UPGRADES.reduce((rate, upgrade) => {
-        if (upgrade.effect.type === 'ticketConversionRate' && ownedHallUpgrades.includes(upgrade.id)) {
+export function getTicketYieldRate(ownedHallUpgrades: readonly string[]): number {
+    return TICKET_YIELD_UPGRADES.reduce((rate, upgrade) => {
+        if (upgrade.effect.type === 'ticketYieldRate' && ownedHallUpgrades.includes(upgrade.id)) {
             return Math.max(rate, upgrade.effect.value);
         }
         return rate;
-    }, BASE_TICKET_CONVERSION_RATE);
+    }, BASE_TICKET_YIELD_RATE);
 }
 
 // --- 2. Freischalt-Schwellen Automat 2-4 (ersetzt MACHINE_UNLOCK_COST) ---
 //
 // game-spec.md 3.3: "Automat 2 schaltet frei nach Hallen-Upgrade-Schwelle X
-// (basierend auf Credits aus Automat 1), Automat 3/4 analog mit steigenden
-// Schwellen". Kosten unveraendert gegenueber der Phase-6-Platzhalterloesung
-// uebernommen (bereits manuell verifiziert, siehe STATUS.md Phase 6:
-// "700 -> 100 Credits, exakt 50+150+400 abgezogen") -- nur der Mechanismus
-// (fest codierte Konstante -> hall.config.ts-Upgrade) aendert sich, nicht
-// die Zahlenbalance selbst.
+// (basierend auf Tickets aus Automat 1), Automat 3/4 analog mit steigenden
+// Schwellen". Kosten unveraendert gegenueber Phase 7 (nur die Waehrung heisst
+// jetzt "Tickets" statt "Credits", siehe STATUS.md Phase 7d).
 const MACHINE_UNLOCK_COSTS: Readonly<Record<string, number>> = {
     'trap-tunnels': 50,
     'beat-ledger': 150,
@@ -103,10 +110,10 @@ export function getMachineUnlockUpgrade(machineId: string): UpgradeDef | undefin
     );
 }
 
-// --- 3. Attendant-Trainingsgeschwindigkeit (neu, Cross-Layer-Feedback) ---
+// --- 3. Attendant-Trainingsgeschwindigkeit (Cross-Layer-Feedback) ---------
 //
 // Baukasten 1.14: "Hoehere Ebenen sollten rueckwirkend niedrigere
-// verbessern". Ein Hallen-Upgrade (gekauft mit Credits, typischerweise aus
+// verbessern". Ein Hallen-Upgrade (gekauft mit Tickets, typischerweise aus
 // spaeteren Automaten) erhoeht den Musterkenntnis-Gewinn pro Training fuer
 // ALLE Automaten gleichzeitig (inkl. Automat 1) -- ohne dieses Upgrade
 // bliebe Automat 1s Attendant nach Freischaltung von Automat 2-4 eine
@@ -114,13 +121,11 @@ export function getMachineUnlockUpgrade(machineId: string): UpgradeDef | undefin
 //
 // AttendantEngine.ts bleibt unveraendert (Vorgabe fuer diese Phase): die
 // Multiplikation passiert hier, ausserhalb der Engine, auf dem bereits
-// exportierten TRAINING_KNOWLEDGE_GAIN, genau wie machines.config.ts schon
-// getEffectiveFailureChance ausserhalb von PushYourLuckEngine/PatternEngine
-// verzahnt (siehe STATUS.md, "aufgeloester Blocker Phase 3").
+// exportierten TRAINING_KNOWLEDGE_GAIN.
 //
 // Obergrenze bewusst < (MANUAL_KNOWLEDGE_GAIN / TRAINING_KNOWLEDGE_GAIN),
 // damit selbst bei voll gekauftem Training manuelles Spielen weiterhin
-// schneller Musterkenntnis aufbaut als Credits-Training (game-spec.md 3.2:
+// schneller Musterkenntnis aufbaut als Tickets-Training (game-spec.md 3.2:
 // Training bleibt "sekundaer, langsamer als eigenes Spielen") -- per Test
 // abgesichert (hall.config.test.ts).
 export const BASE_ATTENDANT_TRAINING_MULTIPLIER = 1;
@@ -161,7 +166,7 @@ export function getEffectiveTrainingGain(ownedHallUpgrades: readonly string[]): 
 }
 
 export const HALL_UPGRADES: readonly UpgradeDef[] = [
-    ...TICKET_CONVERSION_UPGRADES,
+    ...TICKET_YIELD_UPGRADES,
     ...MACHINE_UNLOCK_UPGRADES,
     ...ATTENDANT_SPEED_UPGRADES,
 ];

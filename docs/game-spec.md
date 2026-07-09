@@ -25,32 +25,40 @@ Kernprinzip aller Automaten: **Plan → Ausführung beobachten → Ergebnis.** K
 
 ## 3. Layer 1: Die Spielhalle
 
-### 3.1 Währungsfluss
+### 3.1 Währungsfluss (überarbeitet 2026-07-09, ersetzt Tickets→Credits-Modell)
 
 ```
-Automat (Skill-Score) → Tickets → Credits (Hallen-Währung)
-Credits → Hallen-Upgrades → verbessern Ticket-Rate & schalten neue Automaten frei
-Credits → Attendant-Training pro Automat → verbessert Automatisierungs-Erfolgsquote
+Automat (Skill-Score) → gleichzeitig zwei Ausgaben pro Aktion:
+  1. Automaten-Punkte (lokal, NICHT übertragbar) → Tiefe-/Präzisions-Upgrades DIESES Automaten
+  2. Tickets (hallenweit gepoolt) → Hallen-Upgrades, Freischaltung Automat 2/3/4, Attendant-Training
 ```
 
-- Jeder Automat produziert **Tickets** nach eigener, in sich verständlicher Formel (kein direkter Vergleich zwischen Automaten nötig)
-- Tickets werden zu **Credits** umgerechnet (Hallen-weite Einheitswährung), Umrechnungsrate ist ein Hallen-Upgrade
-- Credits kaufen: Hallen-Upgrades (z. B. bessere Umrechnung), Freischaltung Automat 2/3/4, Attendant-Training pro Automat
+- **Kein "Credits"-Begriff mehr.** Frühere Version hatte Tickets (pro Automat) → Credits (Hallenweit) mit explizitem Umrechnungskurs als eigenem Hallen-Upgrade. Das ist redundant: ein Umrechnungskurs zwischen zwei Währungen, die nur nacheinander verwendet werden, ist mathematisch identisch mit einer direkten Ertragsrate-Erhöhung in der Zielwährung — eine Ebene weniger, gleiche Tiefe.
+- **Zwei getrennte Ausschüttungen pro Aktion, kein manueller Umwandlungsschritt:** Jede erfolgreiche Aktion (manuell oder Attendant) erzeugt gleichzeitig automaten-lokale Punkte UND hallenweite Tickets. Keine sichtbare Zwischenwährung, kein "Umwandeln"-Button.
+- **Feste, nicht kaufbare Normalisierungs-Konstante pro Automat** sorgt dafür, dass alle vier Automaten trotz unterschiedlicher Rohzahlen-Skalen fair zum gemeinsamen Ticket-Pool beitragen (kein direkter Vergleich zwischen Automaten nötig, wie ursprünglich intendiert) — das ist ein interner Balance-Wert in der Config, kein Spieler-Hebel.
+- **Ertragsrate-Upgrade statt Umrechnungskurs:** Der frühere "Umrechnungskurs verbessern"-Hebel wird zu einem Hallen-Upgrade, das die Ticket-Ertragsrate direkt erhöht (hallenweit, wirkt auf alle Automaten gleichzeitig — Cross-Layer-Feedback, Baukasten 1.14).
+- Tickets kaufen: Hallen-Upgrades (Ticket-Ertragsrate), Freischaltung Automat 2/3/4, Attendant-Training pro Automat
+- Automaten-Punkte kaufen: ausschließlich Tiefe-/Präzisions-Upgrades DES EIGENEN Automaten (siehe 4.1b, "Zwei-Achsen-Vorschau") — bewusst nicht übertragbar, damit ein Automat nicht durch im Vorgänger-Automaten gefarmte Punkte "erkauft" leichter wird
 
-### 3.2 Attendant-System (Automatisierung)
+### 3.2 Attendant-System (Automatisierung, überarbeitet 2026-07-09)
 
 - Pro Automat gibt es einen eigenen **Attendant** (diegetisch: Hallenaufsicht)
 - Attendant wird freischaltbar, sobald der Spieler den Automaten einmal "durchgespielt" hat (siehe 4.1, Abschluss-Kriterium)
-- Attendant-Erfolgsquote basiert auf einem **"Musterkenntnis"-Wert** (0–100 %), der die tatsächliche, für diesen Automaten gelernte Wahrscheinlichkeitsverteilung repräsentiert – kein separater, unerklärter Zufallsfaktor (Baukasten 1.10 gilt auch für die Automatisierungs-Ebene)
-- Musterkenntnis steigt durch: manuelles Spielen (primär) + optionales Credits-Training (sekundär, langsamer als eigenes Spielen)
+- **Alle freigeschalteten Attendants laufen GLEICHZEITIG im Hintergrund**, nicht nur der des gerade geöffneten Automaten — sonst würden früher freigeschaltete Automaten zu "stillgelegten Zahlen" verkommen, sobald man zu späteren wechselt (Baukasten 1.14). Ein Automat, den man nicht mehr aktiv spielt, bleibt trotzdem ein kleiner, laufender Beitrag zum Ticket-Ertrag.
+- **Rate statt Einzelsimulation:** Der Attendant führt nicht mehr einzelne Spielrunden Schritt für Schritt aus. Stattdessen wird eine deterministische Ertragsrate (Tickets bzw. Automaten-Punkte pro Sekunde) aus derselben Erwartungswert-Mathematik hergeleitet, die auch für die Blind-EV-Garantie verwendet wird (Musterkenntnis + eigener Tiefe/Präzision-Zugriff bestimmen den erwarteten Ertrag pro Aktion; Aktionen pro Sekunde als fester Parameter). Angewendet über verstrichene Echtzeit (nicht über einen laufenden Tick-Timer) — das ermöglicht auch Fortschritt, während die Seite geschlossen ist ("Offline-Ertrag").
+- **Pool-Ausschüttung für die sichtbare Optik:** Damit der Attendant im Vordergrund weiterhin wie ein echt spielender Akteur wirkt (nicht wie eine glatte Zahl, die hochzählt), wird die Rate in einen Pool eingezahlt, der zyklisch mit einem zufälligen Faktor (0,8–1,2) teilweise ausgeschüttet wird. Die Abweichung vom Faktor 1 verbleibt im Pool (positiv wie negativ) — dadurch pendelt sich der langfristige Durchschnitt exakt auf die zugrunde liegende Rate ein (mathematisch garantiert, nicht nur ungefähr), eine große Ausschüttung macht die nächste kleinere automatisch wahrscheinlicher. Für Offline-/Hintergrund-Berechnung wird NICHT der Pool-Mechanismus wiederholt durchgerechnet, sondern direkt die lineare Rate über die verstrichene Zeit angewendet (der Pool ist reine Vordergrund-Optik).
+- Attendant-Erfolgsquote/-Ertrag basiert auf einem **"Musterkenntnis"-Wert** (0–100 %), der die tatsächliche, für diesen Automaten gelernte Wahrscheinlichkeitsverteilung repräsentiert – kein separater, unerklärter Zufallsfaktor (Baukasten 1.10 gilt auch für die Automatisierungs-Ebene)
+- Musterkenntnis steigt durch: manuelles Spielen (primär) + optionales Tickets-Training (sekundär, langsamer als eigenes Spielen)
 - Attendant-Output ist immer spürbar geringer als optimales manuelles Spiel (Richtwert: max. ~85–90 % der Bestleistung bei voller Musterkenntnis) – aktives Spielen bleibt überlegen (Baukasten 1.3)
+- Für dem Spieler zugängliche Framing/Namen der Upgrades (z. B. "Strategielevel") können sich anders anfühlen, als sie unter der Haube berechnet werden (reiner Rate-Multiplikator) — das ist bewusst, solange die zugrunde liegende Mathematik konsistent bleibt
 
 ### 3.3 Hallen-Fortschritt
 
 - 4 Automaten-Slots, initial nur Automat 1 sichtbar/spielbar
-- Automat 2 schaltet frei nach Hallen-Upgrade-Schwelle X (basierend auf Credits aus Automat 1)
+- Automat 2 schaltet frei nach Hallen-Upgrade-Schwelle X (basierend auf Tickets aus Automat 1)
 - Automat 3 und 4 analog, mit steigenden Schwellen
 - Nach Freischaltung + Durchspielen aller 4 Automaten: Hallen-weiter Abschlussmoment, der den Übergang zu Layer 2 andeutet (Layer 2 selbst: **nicht Teil dieser Spezifikation**)
+- **Vorgemerkt für Layer-2-Planung (nicht jetzt umsetzen):** Ein Prestige-/Reset-Mechanismus ("alles zurücksetzen, dafür mit dauerhaftem Multiplikator neu starten", Baukasten 1.2) wäre ein zusätzliches, sauberes Werkzeug gegen das "früherer Automat wird irrelevant"-Problem — passt aber inhaltlich genau zu dem oben angedeuteten Übergang zu Layer 2 und wird dort geplant, nicht als Ergänzung zu Layer 1.
 
 ---
 
@@ -144,6 +152,48 @@ verbindliches Aktionsmodell — ein reiner zyklischer Konter ohne sichere Option
 Technische Details/Begründung: siehe STATUS.md, Abschnitt zur Kernmechanik-
 Revision v2.
 
+### 4.1c Erkennbarkeit + Banking-Streichung (Ergänzung 2026-07-09, aus erstem Playtest)
+
+Playtest der 5-Zyklus-Mechanik ergab: Aktionen waren visuell kaum zu
+unterscheiden, die Konter-Beziehungen nicht erkennbar, und die Aktions-
+Buttons verrieten direkt das Ergebnis gegen den aktuell bekannten Zustand
+("GROSSER GEWINN sicher") — der Spieler musste die Vorschau dadurch gar nicht
+mehr selbst auswerten. Verbindliche Korrekturen:
+
+- **Kreisanordnung statt Reihe:** Die 5 Aktions-Buttons werden im Fünfeck
+  angeordnet, in derselben Zyklus-Reihenfolge wie die Pattern-Zustände.
+  Nachbarschaft im Kreis entspricht der Konter-Beziehung (räumlich lernbar,
+  statt eine Text-Tabelle nachschlagen zu müssen).
+- **Konsistente Farbcodierung:** Zustand i und Aktion i teilen sich eine
+  feste Farbe (5 unterscheidbare Farben pro Automat). Preview-Anzeige nutzt
+  dieselben Farben statt reinem Text, damit die Sequenz auf einen Blick
+  erfassbar ist.
+- **Statische Referenz-Grafik:** Eine immer sichtbare, sich nie ändernde
+  Übersicht (z. B. Fünfeck mit Pfeilen), die zeigt, welche Aktion welchen
+  Zustand kontert — reine Nachschlage-Information, keine live berechnete
+  Auflösung.
+- **Keine Live-Verhaltensanzeige auf den Buttons (initial):** Buttons zeigen
+  nur Name, Farbe und die generischen Payout-Spannen (Groß/Einfach/Verlust),
+  KEINE Berechnung gegen den aktuell bekannten Zustand. Der Spieler muss
+  Vorschau + Referenz-Grafik selbst gedanklich kombinieren (Baukasten 1.5,
+  echte Entscheidung statt vorgekauter Antwort).
+- **"Hilfe"-Modus als späteres, freischaltbares QoL-Feature vorgemerkt**
+  (nicht jetzt bauen, Backlog für Phase 8/Politur): zeigt optional genau die
+  jetzt entfernte Live-Verhaltensanzeige. Opt-in-Tiefe (Baukasten 1.13) —
+  einfacher, denkender Einstieg standardmäßig, Komfort als spätere Wahl.
+- **Banking entfällt komplett.** Seit jede Aktion sofort Automaten-Punkte UND
+  Tickets gleichzeitig auszahlt (3.1), gibt es keinen "ungesicherten Lauf"
+  mehr, den man verlieren könnte — der ursprüngliche Zweck von Banking
+  (Absicherung vor Totalverlust) ist bereits durch die kontinuierliche,
+  persistente Verbuchung erledigt. "Meilenstein erreicht" ist nur noch eine
+  Fortschritts-Meldung, kein Entscheidungspunkt. "Durchgespielt" bedeutet:
+  der dauerhafte, dem Automaten zugeordnete Punktestand hat einmalig die
+  letzte Meilenstein-Schwelle erreicht.
+- **Depth/Warteschlangen-Länge vereinheitlicht:** Die maximale Anzahl
+  planbarer Aktionen pro Runde muss exakt der maximalen Tiefe entsprechen —
+  bei voller Tiefe muss die GESAMTE geplante Warteschlange sichtbar sein,
+  keine strukturell immer-blinde letzte Position.
+
 ### 4.2 Automat 1 — "Greed Run" (Pac-Man-Twist)
 
 - **Thema:** Kleine Figur bewegt sich auf vorab platzierten Richtungs-Tokens durch ein Raster, sammelt Punkte, muss Patrouillen-Gegnern ausweichen
@@ -178,6 +228,7 @@ Revision v2.
 - Echtgeld-Monetarisierung jeder Art (siehe Baukasten 2: Bezahlpflicht für Macht/Tempo ist ausgeschlossen)
 - Mehrspieler/PvP (siehe Baukasten 3: PvP + Chill-Solo schließt sich aus)
 - Sound-/Art-Design-Details (separates Dokument)
+- **Prestige-/Reset-Mechanismus (vorgemerkt, 2026-07-09):** Als Werkzeug gegen "früherer Automat wird irrelevant" erwogen, aber bewusst nicht in Layer 1 eingebaut (das Problem wird stattdessen durch gleichzeitig laufende Attendants aller Automaten gelöst, siehe 3.2). Ein "alles zurücksetzen, dafür mit dauerhaftem Multiplikator neu starten"-Mechanismus passt inhaltlich zum in 3.3 angedeuteten Übergang zu Layer 2 und sollte dort geplant werden.
 
 ## 6. Offene Design-Fragen
 

@@ -1,53 +1,68 @@
-import type { CyclicActionDef, ResolvedAction } from './types';
+import type { AttendantPoolState, CyclicActionDef, PatternConfig } from './types';
 
 // Attendant-Automatisierung (game-spec.md 3.2, Baukasten 1.3/1.9). Framework-
 // unabhaengig, kennt weder Phaser noch React (Architektur-Kurzregel). Nutzt
-// nur die reinen Typdefinitionen aus ./types (CyclicActionDef/ResolvedAction)
-// -- NICHT die Aufloesungsfunktionen aus src/data/machines.config.ts, die
-// bleiben Data-Layer (Architektur-Kurzregel: Engine importiert nie aus
-// /src/data).
+// nur die reinen Typdefinitionen aus ./types -- NICHT die Aufloesungs-
+// funktionen aus src/data/machines.config.ts, die bleiben Data-Layer
+// (Architektur-Kurzregel: Engine importiert nie aus /src/data).
 //
-// Phase 7c (Kernmechanik-Revision v2, siehe STATUS.md) ersetzt das
-// "harte Aktion vs. Zwischenstufe"-Auswahlmodell aus Phase 7b VOLLSTAENDIG,
-// weil es diese Unterscheidung nicht mehr gibt (nur noch EIN zyklischer
-// Aktionstyp, siehe CyclicActionDef). Der Attendant bleibt an ZWEI
-// Stellschrauben gekoppelt, beide letztlich an die Musterkenntnis
-// (0-1, EconomyStore.getAttendantKnowledge):
-//   1. Effizienz (unveraendert gegenueber Phase 5/7b): der resultierende
-//      Payout wird auf ATTENDANT_MAX_EFFICIENCY * knowledge geklemmt --
+// Phase 7d (Attendant-Rate + Ticket-Oekonomie-Vereinfachung, siehe STATUS.md)
+// ersetzt das komplette Schritt-fuer-Schritt-Auswahlmodell aus Phase 7c
+// (chooseAttendantAction/getAttendantResolvedAction, hier bis Phase 7c
+// vorhanden) VOLLSTAENDIG durch eine deterministische ERTRAGSRATE
+// (Punkte/Sekunde, Tickets/Sekunde), angewendet ueber verstrichene Echtzeit
+// statt ueber einen laufenden Tick-Timer -- der Attendant "spielt" keine
+// einzelnen Runden mehr, er produziert einen kontinuierlichen Fluss. Das
+// loest zwei Probleme gleichzeitig: (1) kein Ressourcenverbrauch durch echte
+// Rundensimulation im Hintergrund, (2) Fortschritt ueberlebt geschlossene
+// Tabs (Offline-Ertrag), da nur die Zeitdifferenz zwischen zwei Aufrufen
+// zaehlt, nicht ein laufender Prozess.
+//
+// Der Attendant bleibt an ZWEI Stellschrauben gekoppelt, beide letztlich an
+// die Musterkenntnis (0-1, EconomyStore.getAttendantKnowledge):
+//   1. Effizienz (unveraendert gegenueber Phase 5/7b/7c): der resultierende
+//      Ertrag wird auf ATTENDANT_MAX_EFFICIENCY * knowledge geklemmt --
 //      selbst bei perfekter Aktionswahl bleibt der Attendant spuerbar unter
 //      der moeglichen Bestleistung (Richtwert 85-90%, game-spec.md 3.2).
-//   2. Eigener Anteil an Tiefe UND Praezision: der Attendant nutzt von der
-//      TATSAECHLICH gekauften Sichtweite (d) und Praezision (p) -- die
-//      gelten fuer Spieler UND Attendant gleich, siehe
-//      machines.config.ts::getPreviewDepth/getPreviewPrecision -- jeweils
-//      nur einen mit der Musterkenntnis wachsenden Anteil. Bei Kenntnis 0
-//      sieht er effektiv nichts voraus, bei voller Kenntnis nutzt er
-//      Tiefe UND Praezision vollstaendig wie ein Spieler.
-//
-// Aktionswahl (STATUS.md, PM-Risikohinweise + Konkrete Umsetzung Punkt 4):
-// kennt der Attendant den Zustand an einer Position EXAKT (seine eigene
-// Praezision an dieser Tiefe reicht bis zur Eindeutigkeit -- genau 1
-// verbleibender Kandidat), waehlt er IMMER die dort konternde Aktion
-// (garantierter Grosser Gewinn). Kennt er ihn nur PARTIELL (mehrere, aber
-// nicht alle Kandidaten uebrig), meidet er -- wo eindeutig bestimmbar --
-// eine Aktion, deren Verlust-Zustand noch als Kandidat uebrig ist (bewusste
-// Ermessensentscheidung, siehe STATUS.md: das ist eine einfache, aber
-// wirksame Heuristik, die den Attendant nicht "raten" laesst, wo Information
-// verfuegbar ist, ohne dass er dafuer die volle PatternEngine-Verteilung
-// kennen muesste). Ist GAR keine Information verfuegbar (Position ausserhalb
-// des eigenen Lookaheads, oder Praezision 0 an dieser Position), faellt er
-// auf eine feste, einfache Wahl zurueck -- die Blind-EV-Garantie
-// (machines.config.test.ts) stellt sicher, dass dabei keine Aktion klar
-// benachteiligt ist.
+//   2. Eigener Anteil an Tiefe UND Praezision (unveraendert): der Attendant
+//      nutzt von der TATSAECHLICH gekauften Sichtweite (d) und Praezision
+//      (p) -- die gelten fuer Spieler UND Attendant gleich -- jeweils nur
+//      einen mit der Musterkenntnis wachsenden Anteil.
 
 export const ATTENDANT_MAX_EFFICIENCY = 0.875;
 
 export const MANUAL_KNOWLEDGE_GAIN = 0.02;
 export const TRAINING_KNOWLEDGE_GAIN = 0.01;
 
+// Feste, konfigurierbare Rate-Parameter (STATUS.md, Teil 2 der Konkreten
+// Umsetzung): "Aktionen pro Sekunde als fester Parameter".
+export const ATTENDANT_ACTIONS_PER_SECOND = 1;
+
+// Pool-Ausschuettungs-Zyklus: "Intervall in der Groessenordnung einer echten
+// Spielrunde" (STATUS.md) -- eine manuelle Planungsrunde mit bis zu 6
+// Schritten a 700ms (MachineScene.STEP_DELAY_MS) dauert ca. 4.2s, daher 4000ms.
+export const ATTENDANT_POOL_CYCLE_MS = 4000;
+export const ATTENDANT_POOL_FACTOR_MIN = 0.8;
+export const ATTENDANT_POOL_FACTOR_MAX = 1.2;
+
+// Ab dieser verstrichenen Echtzeit gilt ein Aufruf als "Fokussieren/Laden
+// nach Abwesenheit" statt als normaler fortlaufender Vordergrund-Tick --
+// bewusst deutlich groesser als das tatsaechliche Tick-Intervall der UI
+// (siehe economy.ts), damit normale, haeufige Ticks IMMER den Pool-Pfad
+// nehmen und nur echte Luecken (Tab im Hintergrund gedrosselt, neu geladen,
+// wieder fokussiert) den direkten Offline-Pfad ausloesen.
+export const FOREGROUND_TICK_THRESHOLD_MS = 15_000;
+
+// Deckel fuer maximal anrechenbare Abwesenheit (STATUS.md: "z. B. 24h"), um
+// absurde Spruenge/Exploits (z. B. Systemuhr manipulieren) zu vermeiden.
+export const MAX_OFFLINE_MS = 24 * 60 * 60 * 1000;
+
 function clamp01(value: number): number {
     return Math.min(1, Math.max(0, value));
+}
+
+function mean([a, b]: readonly [number, number]): number {
+    return (a + b) / 2;
 }
 
 // Anteil der menschenmoeglichen Leistung, den der Attendant bei gegebener
@@ -72,62 +87,192 @@ export function getAttendantPrecision(previewPrecision: number, knowledge: numbe
     return Math.floor(previewPrecision * clamp01(knowledge));
 }
 
-// Leitet aus einer bereits aufgeloesten ResolvedAction (siehe
-// machines.config.ts::resolveMachineAction) die Version ab, mit der der
-// Attendant tatsaechlich PushYourLuckEngine.resolveAction() aufruft: die
-// gesamte Payout-Spanne wird auf die Effizienz skaliert (einheitlich, auch
-// im Verlust-Fall -- ein Attendant, der vorausschauend spielt, vermeidet
-// Verluste bereits durch seine Aktionswahl; eine zusaetzliche Sonderregel
-// nur fuer negative Payouts wuerde hier unnoetige Komplexitaet fuer einen
-// Randfall einfuehren, siehe CLAUDE.md).
-export function getAttendantResolvedAction(resolved: ResolvedAction, knowledge: number): ResolvedAction {
-    const efficiency = getAttendantEfficiency(knowledge);
-    const [min, max] = resolved.payoutRange;
-    return { id: resolved.id, payoutRange: [min * efficiency, max * efficiency] };
+// --- Stationaere Verteilung (Power-Iteration) ---------------------------
+//
+// Bis Phase 7c war das ein reines Test-Werkzeug (machines.config.test.ts,
+// fuer die Blind-EV-Garantie). Phase 7d braucht dieselbe Berechnung zur
+// LAUFZEIT (Attendant-Ertragsrate basiert auf derselben Erwartungswert-
+// Mathematik, STATUS.md Teil 2) -- deshalb hier zu Produktionscode befoerdert
+// und aus dem Test heraus wiederverwendet statt dupliziert.
+export function computeStationaryDistribution(
+    pattern: Pick<PatternConfig, 'states' | 'transitions'>,
+    iterations = 3000,
+): Record<string, number> {
+    const { states, transitions } = pattern;
+    let dist: Record<string, number> = Object.fromEntries(states.map((s) => [s, 1 / states.length]));
+
+    for (let step = 0; step < iterations; step += 1) {
+        const next: Record<string, number> = Object.fromEntries(states.map((s) => [s, 0]));
+        for (const from of states) {
+            const targets = transitions[from] ?? {};
+            for (const [to, probability] of Object.entries(targets)) {
+                next[to] += dist[from] * probability;
+            }
+        }
+        dist = next;
+    }
+    return dist;
 }
 
-// Zentrale Attendant-Entscheidung fuer EINEN Schritt der geplanten Runde.
-// `remainingCandidates` ist die Menge der an dieser Position noch moeglichen
-// Pattern-Zustaende (nach Ausschluss durch die eigene Praezision, siehe
-// machines.config.ts::getExcludedCandidates), oder `undefined`, wenn die
-// Position ausserhalb des eigenen Lookaheads liegt (siehe
-// getAttendantLookahead) -- der Aufrufer (MachineScene) entscheidet das
-// anhand von stepIndex < eigener Lookahead.
+// --- Erwartungswert pro Aktion (Grundlage der Ertragsrate) ---------------
 //
-// - Genau 1 verbleibender Kandidat (Zustand de facto bekannt): waehlt IMMER
-//   die dort konternde Aktion (garantierter Grosser Gewinn).
-// - Mehrere, aber nicht alle Kandidaten (partielle Information): meidet,
-//   wo moeglich, jede Aktion, deren Verlust-Zustand noch ein Kandidat ist;
-//   bevorzugt unter den verbleibenden "sicheren" Aktionen eine, deren
-//   Gewinn-Zustand ebenfalls noch moeglich ist.
-// - Keine Information (undefined, oder alle n Zustaende noch moeglich):
-//   feste Fallback-Wahl (erste Aktion) -- die Blind-EV-Garantie stellt
-//   sicher, dass dabei keine Aktion klar benachteiligt ist.
-export function chooseAttendantAction(
+// Der Attendant "spielt" nicht mehr Schritt fuer Schritt (siehe Datei-
+// Kommentar oben) -- statt seine tatsaechliche Kandidaten-Ausschluss-
+// Heuristik (vormals chooseAttendantAction) exakt nachzubilden (das erfordert
+// eine kombinatorische Betrachtung ueber alle moeglichen Ausschluss-
+// Reihenfolgen je Praezisions-Stufe), wird eine bewusst einfachere, aber an
+// beiden Enden EXAKTE Interpolation verwendet:
+//   - attendantLookahead === 0 (Musterkenntnis reicht nicht, um ueberhaupt
+//     etwas von der naechsten Position zu sehen): der Attendant spielt
+//     durchgehend blind -- EV = EV(actions[0]) unter der stationaeren
+//     Verteilung (derselbe feste Fallback wie die vormalige
+//     chooseAttendantAction-Blindwahl).
+//   - attendantLookahead >= 1: solange previewDepth (bzw. START_DEPTH) >= 1
+//     gilt (game-spec.md 4.1b Punkt 7: Spieler UND Attendant starten nie
+//     komplett blind), sieht der Attendant bei JEDER Aktion zumindest
+//     Teilinformation ueber die UNMITTELBAR naechste Position (der Cursor
+//     rueckt nach jeder Aktion um genau 1 vor) -- die EV interpoliert linear
+//     zwischen der Blind-EV (Praezision 0) und der Perfekt-Info-EV
+//     (Praezision = maxPrecision, Zustand de facto bekannt -> Attendant
+//     waehlt immer die konternde Aktion, garantierter Grosser Gewinn),
+//     gewichtet mit dem Anteil der genutzten Praezisions-Stufen.
+// Das ist eine bewusste, dokumentierte Vereinfachung (keine Monte-Carlo-
+// Simulation, kein exaktes kombinatorisches Modell der Kandidatenmengen) --
+// beide Endpunkte sind exakt, die Interpolation dazwischen ist monoton
+// steigend in der Praezision (mehr Praezision = strikt bessere erwartete
+// Auszahlung), was dem Spieler-Mentalmodell entspricht.
+export function getAttendantExpectedValuePerAction(
     actions: readonly CyclicActionDef[],
-    remainingCandidates: readonly string[] | undefined,
-): CyclicActionDef {
+    stationary: Record<string, number>,
+    attendantLookahead: number,
+    attendantPrecision: number,
+    maxPrecision: number,
+): number {
     if (actions.length === 0) {
-        throw new RangeError('chooseAttendantAction: actions darf nicht leer sein');
+        throw new RangeError('getAttendantExpectedValuePerAction: actions darf nicht leer sein');
     }
 
-    if (remainingCandidates !== undefined && remainingCandidates.length === 1) {
-        const knownState = remainingCandidates[0];
-        const winningAction = actions.find((action) => action.counterState === knownState);
-        if (winningAction) {
-            return winningAction;
-        }
+    const blindAction = actions[0];
+    const pWin = stationary[blindAction.counterState] ?? 0;
+    const pLoss = stationary[blindAction.losesToState] ?? 0;
+    const pNeutral = Math.max(0, 1 - pWin - pLoss);
+    const blindEv = pWin * mean(blindAction.payoutBig) + pLoss * mean(blindAction.payoutLoss) + pNeutral * mean(blindAction.payoutSimple);
+
+    if (attendantLookahead <= 0) {
+        return blindEv;
     }
 
-    if (remainingCandidates !== undefined && remainingCandidates.length < actions.length) {
-        const safeActions = actions.filter((action) => !remainingCandidates.includes(action.losesToState));
-        if (safeActions.length > 0) {
-            const safeAndWinning = safeActions.find((action) => remainingCandidates.includes(action.counterState));
-            return safeAndWinning ?? safeActions[0];
-        }
+    // Perfekt-Info-EV: bei bekanntem Zustand waehlt der Attendant immer die
+    // dort konternde Aktion -> garantierter Grosser Gewinn, gewichtet mit der
+    // stationaeren Wahrscheinlichkeit des jeweiligen Zustands (counterState
+    // ist pro Automat eine Bijektion Zustand<->Aktion, siehe buildCyclicActions).
+    const perfectInfoEv = actions.reduce((sum, action) => sum + (stationary[action.counterState] ?? 0) * mean(action.payoutBig), 0);
+
+    const precisionFraction = maxPrecision > 0 ? clamp01(attendantPrecision / maxPrecision) : 0;
+    return blindEv + precisionFraction * (perfectInfoEv - blindEv);
+}
+
+export interface AttendantRate {
+    machinePointsPerSecond: number;
+    hallTicketsPerSecond: number;
+}
+
+// Vollstaendige Ertragsrate EINES Automaten -- kombiniert EV/Aktion mit
+// Effizienz und Aktionen/Sekunde. `ticketYieldFactor`/`ticketYieldRate`
+// werden NICHT hier verrechnet (Data-Layer-Werte, siehe machines.config.ts::
+// getMachineAttendantRate) -- diese Funktion bleibt reine Engine-Mathematik.
+export function getAttendantMachinePointsRate(
+    actions: readonly CyclicActionDef[],
+    stationary: Record<string, number>,
+    knowledge: number,
+    previewDepth: number,
+    previewPrecision: number,
+    maxPrecision: number,
+): number {
+    const lookahead = getAttendantLookahead(previewDepth, knowledge);
+    const precision = getAttendantPrecision(previewPrecision, knowledge);
+    const evPerAction = getAttendantExpectedValuePerAction(actions, stationary, lookahead, precision, maxPrecision);
+    const efficiency = getAttendantEfficiency(knowledge);
+    return Math.max(0, evPerAction) * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
+}
+
+// --- Pool-Dynamik (Vordergrund-Optik) + Offline-Anwendung -----------------
+
+export function createInitialAttendantPool(): AttendantPoolState {
+    return { machinePoints: 0, hallTickets: 0, msSincePayout: 0 };
+}
+
+export interface AttendantElapsedResult {
+    pool: AttendantPoolState;
+    machinePointsGained: number;
+    hallTicketsGained: number;
+}
+
+export interface ApplyAttendantElapsedOptions {
+    cycleMs?: number;
+    foregroundThresholdMs?: number;
+    rng?: () => number;
+}
+
+// Wendet eine Ertragsrate ueber eine verstrichene Echtzeitspanne an (STATUS.md
+// Teil 2). Zwei Pfade, je nach Groesse von `elapsedMs`:
+//
+// - GROSSE Luecke (> foregroundThresholdMs, z. B. Tab war geschlossen/im
+//   Hintergrund gedrosselt): Rate * verstrichene Zeit wird DIREKT auf die
+//   echte Waehrung angewendet, der Pool bleibt UNVERAENDERT (STATUS.md: "Fuer
+//   Offline-Berechnung NICHT den Pool-Mechanismus mit vielen Einzelzyklen
+//   durchrechnen"). Sobald der Spieler wieder da ist, setzt der Pool-Pfad
+//   exakt dort fort, wo er vor der Luecke stand.
+// - KLEINE Luecke (normaler fortlaufender Vordergrund-Tick): die Rate fliesst
+//   in den Pool, bei ueberschrittener Zyklusdauer (ggf. mehrfach, falls ein
+//   einzelner Aufruf mehrere Zyklen ueberspannt) wird mit einem zufaelligen
+//   Faktor 0.8-1.2 ausgeschuettet. Die Abweichung vom Faktor 1 bleibt im Pool
+//   (auch negativ moeglich -- naechste Ausschuettung wird dann kleiner) --
+//   Ausschuettung selbst nie negativ (bei 0 gekappt).
+export function applyAttendantElapsed(
+    pool: AttendantPoolState,
+    rate: AttendantRate,
+    elapsedMs: number,
+    options: ApplyAttendantElapsedOptions = {},
+): AttendantElapsedResult {
+    const cycleMs = options.cycleMs ?? ATTENDANT_POOL_CYCLE_MS;
+    const foregroundThresholdMs = options.foregroundThresholdMs ?? FOREGROUND_TICK_THRESHOLD_MS;
+    const rng = options.rng ?? Math.random;
+    const clampedElapsedMs = Math.max(0, Math.min(elapsedMs, MAX_OFFLINE_MS));
+
+    if (clampedElapsedMs > foregroundThresholdMs) {
+        const seconds = clampedElapsedMs / 1000;
+        return {
+            pool,
+            machinePointsGained: rate.machinePointsPerSecond * seconds,
+            hallTicketsGained: rate.hallTicketsPerSecond * seconds,
+        };
     }
 
-    return actions[0];
+    const seconds = clampedElapsedMs / 1000;
+    let machinePointsPool = pool.machinePoints + rate.machinePointsPerSecond * seconds;
+    let hallTicketsPool = pool.hallTickets + rate.hallTicketsPerSecond * seconds;
+    let msSincePayout = pool.msSincePayout + clampedElapsedMs;
+
+    let machinePointsGained = 0;
+    let hallTicketsGained = 0;
+
+    while (msSincePayout >= cycleMs) {
+        const factor = ATTENDANT_POOL_FACTOR_MIN + rng() * (ATTENDANT_POOL_FACTOR_MAX - ATTENDANT_POOL_FACTOR_MIN);
+        const pointsPayout = Math.max(0, machinePointsPool * factor);
+        const ticketsPayout = Math.max(0, hallTicketsPool * factor);
+        machinePointsPool -= pointsPayout;
+        hallTicketsPool -= ticketsPayout;
+        machinePointsGained += pointsPayout;
+        hallTicketsGained += ticketsPayout;
+        msSincePayout -= cycleMs;
+    }
+
+    return {
+        pool: { machinePoints: machinePointsPool, hallTickets: hallTicketsPool, msSincePayout },
+        machinePointsGained,
+        hallTicketsGained,
+    };
 }
 
 export function gainKnowledgeFromManualPlay(currentKnowledge: number): number {

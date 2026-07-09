@@ -1,4 +1,9 @@
-import type { CyclicActionDef, MachineConfig, MachineUpgradeDef, ResolvedAction } from '../engine/types';
+import type { CyclicActionDef, MachineConfig, MachineUpgradeDef, Milestone, ResolvedAction } from '../engine/types';
+import {
+    type AttendantRate,
+    computeStationaryDistribution,
+    getAttendantMachinePointsRate,
+} from '../engine/AttendantEngine';
 
 // Automaten-Konfigurationen. Alle spielspezifischen Zahlen/Parameter leben
 // hier (Architektur-Kurzregel in CLAUDE.md), MachineScene.ts liest nur.
@@ -22,6 +27,49 @@ export const START_DEPTH = 1; // Spieler startet nie komplett blind (STATUS.md P
 export const START_PRECISION = 1;
 export const MAX_PRECISION = N_STATES - 1; // p = n-1 => Zustand de facto bekannt
 export const CROSS_PRICE_SURCHARGE_K = 0.2; // Kreuz-Preis-Aufschlag pro Stufe des jeweils anderen Pfads
+
+// Phase 7e (Erkennbarkeit + Banking-Streichung, siehe STATUS.md/CLAUDE.md
+// "UI-Grundsatz: Barrierefreiheit bei Farbcodierung"): 5 farbenblind-sichere
+// Farben (Teilmenge der Okabe-Ito-Palette, https://jfly.uni-koeln.de/color/ --
+// paarweise unterscheidbar auch bei den haeufigsten Farbfehlsichtigkeiten),
+// EINE gemeinsame Palette fuer alle vier Automaten, da die Kopplung an die
+// ZYKLUS-POSITION (0-4) haengt, nicht an ein automaten-spezifisches Thema --
+// Zustand i UND Aktion i (positionell 1:1 gekoppelt, siehe buildCyclicActions)
+// teilen sich STATE_COLORS[i]. Farbe ist NIE das einzige Unterscheidungs-
+// merkmal: jede Position wird zusaetzlich IMMER mit ihrer 1-basierten
+// Positionsnummer (1-5) beschriftet (siehe MachineScene.ts) -- ein zweites,
+// farbunabhaengiges Merkmal, wie vom CLAUDE.md-Grundsatz gefordert.
+export const STATE_COLORS: readonly number[] = [
+    0xe69f00, // Orange
+    0x56b4e9, // Sky Blue
+    0x009e73, // Bluish Green
+    0xd55e00, // Vermillion
+    0xcc79a7, // Reddish Purple
+];
+export const UNKNOWN_COLOR = 0x666666; // neutrales Grau fuer "ausserhalb der Sichtweite"/ausgeschlossene Kandidaten
+
+export function getStateColor(index: number): number {
+    return STATE_COLORS[((index % STATE_COLORS.length) + STATE_COLORS.length) % STATE_COLORS.length];
+}
+
+// Feste, NICHT kaufbare Normalisierungs-Konstante pro Automat (game-spec.md
+// 3.1, Phase 7d): gleicht die unterschiedlichen Rohzahlen-Skalen der vier
+// Automaten NICHT vollstaendig aus (spaetere Automaten duerfen absolut
+// weiterhin mehr beitragen, normales Incremental-Verhalten laut STATUS.md),
+// sondern daempft sie auf einen fairen BASIS-Vergleich: factor =
+// 1/sqrt(scalingFactor), wobei scalingFactor derselbe Meilenstein-
+// Skalierungsfaktor gegenueber Greed Run ist, der bereits die Payout-Ranges
+// und Meilenstein-Schwellen aller vier Automaten bestimmt (1.0/1.2/1.4/1.8,
+// siehe die einzelnen Automaten-Definitionen unten). Ohne Normalisierung
+// wuerde Champion's Ledger bei sonst identischer Spielweise ca. 1.8x mehr
+// Tickets pro Aktion erzeugen als Greed Run (reine Folge der 1.8x hoeheren
+// Rohzahlen); mit der sqrt-Daempfung sind es noch ca. 1.8 * (1/sqrt(1.8)) =
+// sqrt(1.8) ~= 1.34x -- immer noch spuerbar mehr (passend zum spaeteren,
+// schwierigeren Automaten), aber nicht mehr proportional zur vollen
+// Rohzahlen-Skalierung.
+function ticketYieldFactorFor(scalingFactor: number): number {
+    return Math.round((1 / Math.sqrt(scalingFactor)) * 1000) / 1000;
+}
 
 // --- Zyklisches Aktionsmodell -----------------------------------------
 
@@ -59,7 +107,7 @@ export function buildCyclicActions(
 }
 
 // Wandelt eine konfigurierte CyclicActionDef (Config-Zeit) in eine
-// ResolvedAction (Engine-Zeit, das was PushYourLuckEngine.resolveAction
+// ResolvedAction (Engine-Zeit, das was PushYourLuckEngine.drawPayout
 // tatsaechlich konsumiert) um. Deterministisch: welche der drei Payout-
 // Spannen gilt, haengt nur vom aktuellen festen Zustand ab -- kein
 // Zufall bei der "Trefferfrage" mehr (die gibt es seit Phase 7c nicht mehr,
@@ -185,6 +233,37 @@ export function getMachineUpgrade(machine: MachineConfig, upgradeId: string): Ma
     return [...machine.depthUpgrades, ...machine.precisionUpgrades].find((upgrade) => upgrade.id === upgradeId);
 }
 
+// --- Attendant-Ertragsrate (Phase 7d, STATUS.md Teil 2) -----------------
+//
+// Komposition der reinen Engine-Mathematik (AttendantEngine.ts) mit den
+// Data-Layer-Werten dieses Automaten (Pattern/Aktionen/Vorschau-Upgrades)
+// UND dem hallenweiten Ticket-Ertragsrate-Multiplikator (hall.config.ts) --
+// lebt hier statt in AttendantEngine.ts, weil letztere laut Architektur-
+// Kurzregel nie aus /src/data importieren darf (dieselbe Konvention wie
+// resolveMachineAction/getEffectiveTrainingGain).
+export function getMachineAttendantRate(
+    machine: MachineConfig,
+    knowledge: number,
+    ownedUpgradeIds: readonly string[],
+    ticketYieldRate: number,
+): AttendantRate {
+    const stationary = computeStationaryDistribution(machine.pattern);
+    const depthLevel = getPreviewDepth(machine, ownedUpgradeIds);
+    const precisionLevel = getPreviewPrecision(machine, ownedUpgradeIds);
+    const machinePointsPerSecond = getAttendantMachinePointsRate(
+        machine.actions,
+        stationary,
+        knowledge,
+        depthLevel,
+        precisionLevel,
+        MAX_PRECISION,
+    );
+    return {
+        machinePointsPerSecond,
+        hallTicketsPerSecond: machinePointsPerSecond * machine.ticketYieldFactor * ticketYieldRate,
+    };
+}
+
 // --- Zielwert-Check (STATUS.md Punkt 7, PFLICHT) -----------------------
 
 // Gesamtkosten beider Leitern bei AUSGEWOGENEM (interleaved) Einkauf:
@@ -220,16 +299,29 @@ export function getFinalMilestoneThreshold(machine: MachineConfig): number {
 }
 
 // Verhaeltnis von Gesamtkosten beider Leitern (ausgewogener Einkauf) zum
-// erwarteten Ticket-Ertrag bis zum ERSTEN Erreichen des letzten
-// Meilensteins. 1 Punkt Score = 1 Ticket (Banking sichert den Punktestand
-// direkt als Tickets, siehe MachineScene.ts::finishExecution/bankRun) --
-// der erwartete Ticket-Ertrag eines abgeschlossenen Laufs ist daher
-// naeherungsweise der letzte Meilenstein-Schwellenwert selbst (ein Spieler
-// bankt kurz NACH Erreichen der Schwelle, der Ueberschuss pro Schritt ist
-// klein relativ zur Schwelle, siehe Blind-EV-Werte im Test). Zielkorridor
-// 85-95%, per Test verifiziert (machines.config.test.ts).
+// erwarteten Automaten-Punkte-Ertrag bis zum ERSTEN Erreichen des letzten
+// Meilensteins. Der letzte Meilenstein-Schwellenwert selbst ist eine gute
+// Naeherung fuer diesen erwarteten Ertrag, da der Punktestand seit Phase 7d/
+// 7e ohnehin sofort und dauerhaft verbucht wird (kein Banking-Ueberschuss
+// mehr einzukalkulieren, siehe Blind-EV-Werte im Test). Zielkorridor
+// 85-95%, per Test verifiziert (machines.config.test.ts). Wert historisch
+// unter Phase-7c-Annahmen kalibriert (siehe STATUS.md) -- bleibt in Phase 7e
+// gueltig, da sich an den Payout-/Meilenstein-Zahlen nichts aendert.
 export function getUpgradeCostToMilestoneRatio(machine: MachineConfig): number {
     return computeInterleavedUpgradeCost(machine) / getFinalMilestoneThreshold(machine);
+}
+
+// --- Meilenstein-Auswertung gegen den persistenten Punktestand-Peak -----
+// (Phase 7e, ersetzt PushYourLuckRun.getReachedMilestones/canBank/bank; siehe
+// STATUS.md "Banking-Streichung"). `peakScore` kommt aus
+// EconomyStore.getMachinePeakScore(machineId) -- reine Ableitungsfunktion,
+// kennt selbst keinen State.
+export function getReachedMilestones(machine: MachineConfig, peakScore: number): Milestone[] {
+    return machine.milestones.filter((m) => peakScore >= m.threshold);
+}
+
+export function isFinalMilestoneReached(machine: MachineConfig, peakScore: number): boolean {
+    return peakScore >= getFinalMilestoneThreshold(machine);
 }
 
 // ========================================================================
@@ -272,16 +364,13 @@ export const GREED_RUN: MachineConfig = {
         visibilityPerUpgrade: [],
     },
     actions: GREED_RUN_ACTIONS,
-    milestones: [
-        { threshold: 20, bankable: true },
-        { threshold: 50, bankable: true },
-        { threshold: 100, bankable: true },
-    ],
+    milestones: [{ threshold: 20 }, { threshold: 50 }, { threshold: 100 }],
     // Basispreise (STATUS.md Punkt 7, Ausgangsbasis fuer die Skalierung der
     // anderen drei Automaten): total interleaved Kosten ~89.3 Tickets bei
     // Schwelle 100 -> 89.3% (Zielkorridor 85-95%, per Test verifiziert).
     depthUpgrades: buildDepthUpgrades('greed-run', 'Streckenkenntnis', [2, 4, 8, 18]),
     precisionUpgrades: buildPrecisionUpgrades('greed-run', 'Scharfblick', [3, 6, 16]),
+    ticketYieldFactor: ticketYieldFactorFor(1.0), // = 1.0, Skalierungs-Basis
 };
 
 // ========================================================================
@@ -321,15 +410,12 @@ export const TRAP_TUNNELS: MachineConfig = {
         visibilityPerUpgrade: [],
     },
     actions: TRAP_TUNNELS_ACTIONS,
-    milestones: [
-        { threshold: 25, bankable: true },
-        { threshold: 60, bankable: true },
-        { threshold: 120, bankable: true },
-    ],
+    milestones: [{ threshold: 25 }, { threshold: 60 }, { threshold: 120 }],
     // Basispreise = Greed Run * 1.2 (Skalierungsfaktor), gerundet. Total
     // interleaved Kosten ~108.1 Tickets bei Schwelle 120 -> 90.1%.
     depthUpgrades: buildDepthUpgrades('trap-tunnels', 'Tunnelkarte', [2, 5, 10, 22]),
     precisionUpgrades: buildPrecisionUpgrades('trap-tunnels', 'Erdlesung', [4, 7, 19]),
+    ticketYieldFactor: ticketYieldFactorFor(1.2), // ~= 0.913
 };
 
 // ========================================================================
@@ -368,15 +454,12 @@ export const BEAT_LEDGER: MachineConfig = {
         visibilityPerUpgrade: [],
     },
     actions: BEAT_LEDGER_ACTIONS,
-    milestones: [
-        { threshold: 30, bankable: true },
-        { threshold: 70, bankable: true },
-        { threshold: 140, bankable: true },
-    ],
+    milestones: [{ threshold: 30 }, { threshold: 70 }, { threshold: 140 }],
     // Basispreise = Greed Run * 1.4. Total interleaved Kosten ~123.6 Tickets
     // bei Schwelle 140 -> 88.3%.
     depthUpgrades: buildDepthUpgrades('beat-ledger', 'Vorlauf', [3, 6, 11, 25]),
     precisionUpgrades: buildPrecisionUpgrades('beat-ledger', 'Notenschaerfe', [4, 8, 22]),
+    ticketYieldFactor: ticketYieldFactorFor(1.4), // ~= 0.845
 };
 
 // ========================================================================
@@ -420,15 +503,12 @@ export const CHAMPIONS_LEDGER: MachineConfig = {
         visibilityPerUpgrade: [],
     },
     actions: CHAMPIONS_LEDGER_ACTIONS,
-    milestones: [
-        { threshold: 40, bankable: true },
-        { threshold: 90, bankable: true },
-        { threshold: 180, bankable: true },
-    ],
+    milestones: [{ threshold: 40 }, { threshold: 90 }, { threshold: 180 }],
     // Basispreise = Greed Run * 1.8. Total interleaved Kosten ~159.8 Tickets
     // bei Schwelle 180 -> 88.8%.
     depthUpgrades: buildDepthUpgrades('champions-ledger', 'Kampfanalyse', [4, 7, 14, 32]),
     precisionUpgrades: buildPrecisionUpgrades('champions-ledger', 'Tell-Erkennung', [5, 11, 29]),
+    ticketYieldFactor: ticketYieldFactorFor(1.8), // ~= 0.745
 };
 
 export const MACHINES: readonly MachineConfig[] = [GREED_RUN, TRAP_TUNNELS, BEAT_LEDGER, CHAMPIONS_LEDGER];

@@ -2,11 +2,26 @@ import { useEffect, useState } from 'react';
 import { PhaserGame } from './PhaserGame';
 import { HallHub } from './ui/HallHub';
 import { EventBus } from './game/EventBus';
-import { getCurrentView, setCurrentView, type View } from './game/viewState';
+import { economyStore, tickAttendants } from './game/economy';
+import { getEntryPointMachine } from './data/machines.config';
+
+type View = 'machine' | 'hall';
+
+// Attendant-Rate-Tick (Phase 7d, siehe economy.ts::tickAttendants): laeuft
+// unabhaengig von der aktuellen Ansicht (Halle vs. Automat) und unabhaengig
+// davon, welcher Automat gerade in Phaser geladen ist -- ALLE freigeschalteten
+// Automaten produzieren gleichzeitig im Hintergrund. Das Intervall bestimmt
+// nur, wie oft die (Pool-basierte) Vordergrund-Optik aktualisiert wird;
+// grosse Luecken (Tab im Hintergrund gedrosselt, neu geladen) werden von
+// tickAttendants selbst korrekt als Offline-Ertrag erkannt und angewendet
+// (siehe AttendantEngine.ts::applyAttendantElapsed).
+const ATTENDANT_TICK_INTERVAL_MS = 2000;
 
 function App()
 {
-    const [view, setView] = useState<View>(getCurrentView);
+    const [view, setView] = useState<View>(() =>
+        economyStore.isMachineCompleted(getEntryPointMachine().id) ? 'hall' : 'machine',
+    );
 
     // 'hall-reveal' feuert einmalig beim Durchbruch (TransitionScene),
     // 'return-to-hall' bei jeder spaeteren manuellen Rueckkehr aus einem
@@ -23,14 +38,15 @@ function App()
         };
     }, []);
 
-    // Bruecke React -> Phaser fuer die Attendant-Automatisierung (Phase 5):
-    // MachineScene liest getCurrentView() synchron bei der eigenen
-    // Erstellung (race-frei, siehe viewState.ts) und reagiert danach live
-    // auf dieses Event, statt einen eigenen State parallel zu view zu fuehren.
+    // Sofortiger Tick beim Mounten (wendet z. B. Offline-Ertrag seit dem
+    // letzten Speichern sofort an) + periodischer Tick danach, unabhaengig
+    // von `view` (Phase 7d loest die fruehere View-Kopplung des Attendants
+    // bewusst auf, siehe STATUS.md).
     useEffect(() => {
-        setCurrentView(view);
-        EventBus.emit('view-changed', { view });
-    }, [view]);
+        tickAttendants();
+        const interval = setInterval(() => tickAttendants(), ATTENDANT_TICK_INTERVAL_MS);
+        return () => clearInterval(interval);
+    }, []);
 
     const handleSelectMachine = (machineId: string) => {
         EventBus.emit('request-machine', { machineId });

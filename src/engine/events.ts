@@ -37,8 +37,9 @@ export class EventEmitter<EventMap extends Record<string, unknown>> {
 // eigenen EventEmitter<EngineEvents> (kein globales Singleton), damit
 // mehrere Instanzen (z. B. in Tests) sich nicht gegenseitig stoeren.
 export type EngineEvents = {
-    'credits-changed': { credits: Decimal };
-    'tickets-changed': { machineId: string; tickets: Decimal };
+    'hall-tickets-changed': { tickets: Decimal }; // Phase 7d, ersetzt 'credits-changed'
+    'machine-points-changed': { machineId: string; points: Decimal }; // Phase 7d, ersetzt 'tickets-changed'
+    'machine-peak-score-changed': { machineId: string; peak: Decimal }; // Phase 7e, treibt Meilenstein-Pips
     'machine-unlocked': { machineId: string };
     'machine-completed': { machineId: string };
     'hall-upgrade-purchased': { upgradeId: string };
