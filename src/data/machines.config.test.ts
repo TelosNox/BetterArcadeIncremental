@@ -5,17 +5,26 @@ import {
     CROSS_PRICE_SURCHARGE_K,
     GREED_RUN,
     MACHINES,
+    MAX_GRID_PRECISION,
     MAX_PRECISION,
+    MAX_SIGHT_RANGE,
     N_STATES,
+    SECTOR_COLORS,
+    START_ACTION_BUDGET,
     START_DEPTH,
+    START_GRID_PRECISION,
     START_PRECISION,
+    START_SIGHT_RANGE,
     TRAP_TUNNELS,
     buildCyclicActions,
     computeCandidateExclusionOrder,
     computeInterleavedUpgradeCost,
+    getActionBudget,
     getEntryPointMachine,
     getExcludedCandidates,
     getFinalMilestoneThreshold,
+    getGridMachineUpgrade,
+    getGridPrecisionLevel,
     getMachineAttendantRate,
     getMachineConfig,
     getMachineUpgrade,
@@ -23,21 +32,30 @@ import {
     getPreviewDepth,
     getPreviewPrecision,
     getReachedMilestones,
+    getSectorColor,
+    getSightRange,
     getStateColor,
     getUpgradeCostToMilestoneRatio,
     isFinalMilestoneReached,
     resolveMachineAction,
     STATE_COLORS,
 } from './machines.config';
-import type { MachineConfig } from '../engine/types';
+import type { CyclicMachineConfig } from '../engine/types';
 import { PatternEngine } from '../engine/PatternEngine';
 import { computeStationaryDistribution } from '../engine/AttendantEngine';
+import { computeBlindExpectedValue, SECTOR_CATEGORIES } from '../engine/GridRunEngine';
+
+// Phase 7f (Greed Run Genre-Rework): Greed Run ist jetzt ein Grid-Automat
+// (kind: 'grid') und hat kein pattern/actions/depthUpgrades/precisionUpgrades
+// mehr -- alle Tests, die diese Felder brauchen, laufen ab hier nur noch
+// ueber die drei unveraendert zyklischen Automaten (kind: 'cyclic').
+const CYCLIC_MACHINES: readonly CyclicMachineConfig[] = [TRAP_TUNNELS, BEAT_LEDGER, CHAMPIONS_LEDGER];
 
 // Stationaere Verteilung einer (ergodischen) Markov-Kette per Power-Iteration
 // -- seit Phase 7d Produktionscode (AttendantEngine.ts::
 // computeStationaryDistribution, wird zur Laufzeit fuer die Attendant-
 // Ertragsrate gebraucht), hier nur noch importiert statt dupliziert.
-function stationaryDistribution(machine: MachineConfig): Record<string, number> {
+function stationaryDistribution(machine: CyclicMachineConfig): Record<string, number> {
     return computeStationaryDistribution(machine.pattern);
 }
 
@@ -48,7 +66,7 @@ function mean([a, b]: readonly [number, number]): number {
 // Blind-EV einer Aktion unter der ECHTEN stationaeren Verteilung (nicht
 // 1/n angenommen, siehe STATUS.md Punkt 4): P(Gewinn)*Big + P(Verlust)*Loss
 // + P(Rest)*Simple.
-function blindEv(machine: MachineConfig, stationary: Record<string, number>) {
+function blindEv(machine: CyclicMachineConfig, stationary: Record<string, number>) {
     return machine.actions.map((action) => {
         const pWin = stationary[action.counterState];
         const pLoss = stationary[action.losesToState];
@@ -88,7 +106,7 @@ describe('machines.config', () => {
         });
     });
 
-    describe('Automaten-Konfigurationen (alle vier, Phase 7c Aktionsmodell)', () => {
+    describe('Automaten-Konfigurationen (alle vier, gemeinsame Felder)', () => {
         it('enthaelt genau 4 Automaten', () => {
             expect(MACHINES).toHaveLength(4);
         });
@@ -97,8 +115,11 @@ describe('machines.config', () => {
             expect(MACHINES.filter((machine) => machine.entryPoint)).toHaveLength(1);
         });
 
-        it.each(MACHINES)('$name: PatternConfig ist gueltig (PatternEngine wirft nicht)', (machine) => {
-            expect(() => new PatternEngine(machine.pattern)).not.toThrow();
+        it('Greed Run ist der einzige Grid-Automat, die anderen drei bleiben zyklisch (Phase 7f)', () => {
+            expect(GREED_RUN.kind).toBe('grid');
+            for (const machine of CYCLIC_MACHINES) {
+                expect(machine.kind).toBe('cyclic');
+            }
         });
 
         it.each(MACHINES)('$name: Milestones sind gueltig (nicht-leer, positiv, strikt steigend)', (machine) => {
@@ -110,13 +131,19 @@ describe('machines.config', () => {
                 }
             }
         });
+    });
 
-        it.each(MACHINES)('$name: hat genau 5 Pattern-Zustaende UND genau 5 Aktionen', (machine) => {
+    describe('Automaten 2-4 (zyklisches Aktionsmodell, Phase 7c, unveraendert seit Phase 7f)', () => {
+        it.each(CYCLIC_MACHINES)('$name: PatternConfig ist gueltig (PatternEngine wirft nicht)', (machine) => {
+            expect(() => new PatternEngine(machine.pattern)).not.toThrow();
+        });
+
+        it.each(CYCLIC_MACHINES)('$name: hat genau 5 Pattern-Zustaende UND genau 5 Aktionen', (machine) => {
             expect(machine.pattern.states).toHaveLength(N_STATES);
             expect(machine.actions).toHaveLength(N_STATES);
         });
 
-        it.each(MACHINES)(
+        it.each(CYCLIC_MACHINES)(
             '$name: jede Aktion hat ein disjunktes Gewinn/Verlust-Zustandspaar',
             (machine) => {
                 for (const action of machine.actions) {
@@ -127,7 +154,7 @@ describe('machines.config', () => {
             },
         );
 
-        it.each(MACHINES)(
+        it.each(CYCLIC_MACHINES)(
             '$name: counterState/losesToState bilden je einen vollstaendigen 5er-Zyklus (jeder Zustand genau einmal Gewinn-Ziel, genau einmal Verlust-Ziel)',
             (machine) => {
                 const winTargets = machine.actions.map((a) => a.counterState).sort();
@@ -138,7 +165,7 @@ describe('machines.config', () => {
             },
         );
 
-        it.each(MACHINES)(
+        it.each(CYCLIC_MACHINES)(
             '$name: Blind-EV-Garantie -- jede Aktion hat unter der stationaeren Verteilung einen positiven Erwartungswert',
             (machine) => {
                 const stationary = stationaryDistribution(machine);
@@ -149,7 +176,7 @@ describe('machines.config', () => {
             },
         );
 
-        it.each(MACHINES)(
+        it.each(CYCLIC_MACHINES)(
             '$name: keine Aktion dominiert die anderen beim blinden Spiel (Verhaeltnis groesster/kleinster Blind-EV <= 1.25)',
             (machine) => {
                 const stationary = stationaryDistribution(machine);
@@ -159,24 +186,85 @@ describe('machines.config', () => {
             },
         );
 
-        it.each(MACHINES)('$name: Zielwert-Check liegt im Korridor 85-95% (Zwei-Achsen-Vorschau, ausgewogener Einkauf)', (machine) => {
+        it.each(CYCLIC_MACHINES)('$name: Zielwert-Check liegt im Korridor 85-95% (Zwei-Achsen-Vorschau, ausgewogener Einkauf)', (machine) => {
             const ratio = getUpgradeCostToMilestoneRatio(machine);
             expect(ratio).toBeGreaterThanOrEqual(0.85);
             expect(ratio).toBeLessThanOrEqual(0.95);
         });
 
-        it.each(MACHINES)('$name: hat genau 4 Tiefe-Upgrades und 3 Praezisions-Upgrades', (machine) => {
+        it.each(CYCLIC_MACHINES)('$name: hat genau 4 Tiefe-Upgrades und 3 Praezisions-Upgrades', (machine) => {
             expect(machine.depthUpgrades).toHaveLength(4);
             expect(machine.precisionUpgrades).toHaveLength(3);
         });
 
-        it.each(MACHINES)('$name: Basispreise (cost) sind positiv und strikt geometrisch steigend', (machine) => {
+        it.each(CYCLIC_MACHINES)('$name: Basispreise (cost) sind positiv und strikt geometrisch steigend', (machine) => {
             for (const ladder of [machine.depthUpgrades, machine.precisionUpgrades]) {
                 for (let i = 1; i < ladder.length; i += 1) {
                     expect(ladder[i - 1].cost).toBeGreaterThan(0);
                     expect(ladder[i].cost).toBeGreaterThan(ladder[i - 1].cost);
                 }
             }
+        });
+    });
+
+    describe('Greed Run (Grid-Automat, Phase 7f Genre-Rework)', () => {
+        it('hat 24 Nicht-Start-Sektoren, korrekt auf die 4 Kategorien verteilt', () => {
+            const total = SECTOR_CATEGORIES.reduce((sum, c) => sum + GREED_RUN.grid.categoryCounts[c], 0);
+            expect(total).toBe(GREED_RUN.grid.gridSize * GREED_RUN.grid.gridSize - 1);
+        });
+
+        it('Blind-EV-Garantie: ueber die Kategorien-Haeufigkeit gemittelter Payout eines unvorbereiteten Zugs ist positiv', () => {
+            expect(computeBlindExpectedValue(GREED_RUN.grid)).toBeGreaterThan(0);
+        });
+
+        it('Sicherheits-Constraint ist konfiguriert (max. 1 Geist unter den Start-Nachbarn)', () => {
+            expect(GREED_RUN.grid.maxGhostAmongStartNeighbors).toBe(1);
+        });
+
+        it('hat 3 Sichtweite-, 2 Grid-Praezisions- und 4 Aktionsbudget-Upgrades', () => {
+            expect(GREED_RUN.sightRangeUpgrades).toHaveLength(3);
+            expect(GREED_RUN.gridPrecisionUpgrades).toHaveLength(2);
+            expect(GREED_RUN.actionBudgetUpgrades).toHaveLength(4);
+        });
+
+        it('jede der drei Leitern hat positive, strikt steigende Basispreise', () => {
+            for (const ladder of [GREED_RUN.sightRangeUpgrades, GREED_RUN.gridPrecisionUpgrades, GREED_RUN.actionBudgetUpgrades]) {
+                for (let i = 1; i < ladder.length; i += 1) {
+                    expect(ladder[i - 1].cost).toBeGreaterThan(0);
+                    expect(ladder[i].cost).toBeGreaterThan(ladder[i - 1].cost);
+                }
+            }
+        });
+
+        it('getSightRange/getGridPrecisionLevel/getActionBudget liefern die Startwerte ohne gekaufte Upgrades', () => {
+            expect(getSightRange(GREED_RUN, [])).toBe(START_SIGHT_RANGE);
+            expect(getGridPrecisionLevel(GREED_RUN, [])).toBe(START_GRID_PRECISION);
+            expect(getActionBudget(GREED_RUN, [])).toBe(START_ACTION_BUDGET);
+        });
+
+        it('getSightRange deckelt bei MAX_SIGHT_RANGE (letzte Stufe)', () => {
+            const owned = GREED_RUN.sightRangeUpgrades.map((u) => u.id);
+            expect(getSightRange(GREED_RUN, owned)).toBe(MAX_SIGHT_RANGE);
+        });
+
+        it('getGridPrecisionLevel deckelt bei MAX_GRID_PRECISION (letzte Stufe)', () => {
+            const owned = GREED_RUN.gridPrecisionUpgrades.map((u) => u.id);
+            expect(getGridPrecisionLevel(GREED_RUN, owned)).toBe(MAX_GRID_PRECISION);
+        });
+
+        it('getGridMachineUpgrade findet ein Upgrade in jeder der drei Leitern', () => {
+            expect(getGridMachineUpgrade(GREED_RUN, GREED_RUN.sightRangeUpgrades[0].id)).toBe(GREED_RUN.sightRangeUpgrades[0]);
+            expect(getGridMachineUpgrade(GREED_RUN, GREED_RUN.gridPrecisionUpgrades[0].id)).toBe(GREED_RUN.gridPrecisionUpgrades[0]);
+            expect(getGridMachineUpgrade(GREED_RUN, GREED_RUN.actionBudgetUpgrades[0].id)).toBe(GREED_RUN.actionBudgetUpgrades[0]);
+            expect(getGridMachineUpgrade(GREED_RUN, 'unbekannt')).toBeUndefined();
+        });
+
+        it('SECTOR_COLORS/getSectorColor liefern fuer jede Kategorie eine eigene Farbe (Barrierefreiheits-Grundsatz)', () => {
+            const colors = SECTOR_CATEGORIES.map((c) => SECTOR_COLORS[c]);
+            expect(new Set(colors.filter((c) => c !== SECTOR_COLORS.empty)).size).toBe(
+                new Set(SECTOR_CATEGORIES.filter((c) => c !== 'empty')).size,
+            );
+            expect(getSectorColor('ghost')).toBe(SECTOR_COLORS.ghost);
         });
     });
 
@@ -207,7 +295,7 @@ describe('machines.config', () => {
     });
 
     describe('resolveMachineAction', () => {
-        const action = GREED_RUN.actions[0]; // 'sprint': win 'nah', loss 'rueckzug'
+        const action = TRAP_TUNNELS.actions[0]; // 'sprengladung': win 'wackelig', loss 'freigelegt'
 
         it('liefert payoutBig am Gewinn-Zustand', () => {
             expect(resolveMachineAction(action, action.counterState)).toEqual({
@@ -224,7 +312,7 @@ describe('machines.config', () => {
         });
 
         it('liefert payoutSimple bei jedem anderen Zustand', () => {
-            const neutralStates = GREED_RUN.pattern.states.filter(
+            const neutralStates = TRAP_TUNNELS.pattern.states.filter(
                 (s) => s !== action.counterState && s !== action.losesToState,
             );
             expect(neutralStates.length).toBe(3);
@@ -281,70 +369,70 @@ describe('machines.config', () => {
 
     describe('getPreviewDepth / getPreviewPrecision', () => {
         it('liefert START_DEPTH/START_PRECISION ohne gekaufte Upgrades', () => {
-            expect(getPreviewDepth(GREED_RUN, [])).toBe(START_DEPTH);
-            expect(getPreviewPrecision(GREED_RUN, [])).toBe(START_PRECISION);
+            expect(getPreviewDepth(TRAP_TUNNELS, [])).toBe(START_DEPTH);
+            expect(getPreviewPrecision(TRAP_TUNNELS, [])).toBe(START_PRECISION);
         });
 
         it('steigt mit dem hoechsten gekauften Upgrade je Achse', () => {
-            const owned = [GREED_RUN.depthUpgrades[0].id, GREED_RUN.depthUpgrades[1].id];
-            expect(getPreviewDepth(GREED_RUN, owned)).toBe(GREED_RUN.depthUpgrades[1].effect.value);
+            const owned = [TRAP_TUNNELS.depthUpgrades[0].id, TRAP_TUNNELS.depthUpgrades[1].id];
+            expect(getPreviewDepth(TRAP_TUNNELS, owned)).toBe(TRAP_TUNNELS.depthUpgrades[1].effect.value);
         });
 
         it('deckelt Praezision bei MAX_PRECISION (letzte Stufe)', () => {
-            const owned = GREED_RUN.precisionUpgrades.map((u) => u.id);
-            expect(getPreviewPrecision(GREED_RUN, owned)).toBe(MAX_PRECISION);
+            const owned = TRAP_TUNNELS.precisionUpgrades.map((u) => u.id);
+            expect(getPreviewPrecision(TRAP_TUNNELS, owned)).toBe(MAX_PRECISION);
         });
 
         it('deckelt Tiefe bei N_STATES (letzte Stufe)', () => {
-            const owned = GREED_RUN.depthUpgrades.map((u) => u.id);
-            expect(getPreviewDepth(GREED_RUN, owned)).toBe(N_STATES);
+            const owned = TRAP_TUNNELS.depthUpgrades.map((u) => u.id);
+            expect(getPreviewDepth(TRAP_TUNNELS, owned)).toBe(N_STATES);
         });
     });
 
     describe('getMachineUpgradeCost (Kreuz-Preis-Kopplung)', () => {
         it('entspricht dem Basispreis ohne gekaufte Upgrades der anderen Achse', () => {
-            const upgrade = GREED_RUN.depthUpgrades[0];
-            expect(getMachineUpgradeCost(GREED_RUN, upgrade, [])).toBeCloseTo(upgrade.cost);
+            const upgrade = TRAP_TUNNELS.depthUpgrades[0];
+            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, [])).toBeCloseTo(upgrade.cost);
         });
 
         it('steigt multiplikativ mit jeder gekauften Stufe der jeweils anderen Achse', () => {
-            const upgrade = GREED_RUN.depthUpgrades[0];
-            const oneOtherBought = [GREED_RUN.precisionUpgrades[0].id];
-            expect(getMachineUpgradeCost(GREED_RUN, upgrade, oneOtherBought)).toBeCloseTo(
+            const upgrade = TRAP_TUNNELS.depthUpgrades[0];
+            const oneOtherBought = [TRAP_TUNNELS.precisionUpgrades[0].id];
+            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, oneOtherBought)).toBeCloseTo(
                 upgrade.cost * (1 + CROSS_PRICE_SURCHARGE_K),
             );
-            const twoOtherBought = [GREED_RUN.precisionUpgrades[0].id, GREED_RUN.precisionUpgrades[1].id];
-            expect(getMachineUpgradeCost(GREED_RUN, upgrade, twoOtherBought)).toBeCloseTo(
+            const twoOtherBought = [TRAP_TUNNELS.precisionUpgrades[0].id, TRAP_TUNNELS.precisionUpgrades[1].id];
+            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, twoOtherBought)).toBeCloseTo(
                 upgrade.cost * (1 + CROSS_PRICE_SURCHARGE_K) ** 2,
             );
         });
 
         it('ignoriert bereits gekaufte Stufen der EIGENEN Achse fuer den Aufschlag', () => {
-            const upgrade = GREED_RUN.depthUpgrades[1];
-            const ownDepthBought = [GREED_RUN.depthUpgrades[0].id];
-            expect(getMachineUpgradeCost(GREED_RUN, upgrade, ownDepthBought)).toBeCloseTo(upgrade.cost);
+            const upgrade = TRAP_TUNNELS.depthUpgrades[1];
+            const ownDepthBought = [TRAP_TUNNELS.depthUpgrades[0].id];
+            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, ownDepthBought)).toBeCloseTo(upgrade.cost);
         });
     });
 
     describe('getMachineUpgrade', () => {
         it('findet ein Upgrade in der Tiefe-Leiter', () => {
-            expect(getMachineUpgrade(GREED_RUN, GREED_RUN.depthUpgrades[0].id)).toBe(GREED_RUN.depthUpgrades[0]);
+            expect(getMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.depthUpgrades[0].id)).toBe(TRAP_TUNNELS.depthUpgrades[0]);
         });
 
         it('findet ein Upgrade in der Praezisions-Leiter', () => {
-            expect(getMachineUpgrade(GREED_RUN, GREED_RUN.precisionUpgrades[0].id)).toBe(
-                GREED_RUN.precisionUpgrades[0],
+            expect(getMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.precisionUpgrades[0].id)).toBe(
+                TRAP_TUNNELS.precisionUpgrades[0],
             );
         });
 
         it('liefert undefined fuer unbekannte id', () => {
-            expect(getMachineUpgrade(GREED_RUN, 'unbekannt')).toBeUndefined();
+            expect(getMachineUpgrade(TRAP_TUNNELS, 'unbekannt')).toBeUndefined();
         });
     });
 
     describe('computeInterleavedUpgradeCost / getFinalMilestoneThreshold', () => {
         it('ist positiv und kleiner als die Summe aller Basispreise ohne Kopplung (k>0 wirkt)', () => {
-            for (const machine of MACHINES) {
+            for (const machine of CYCLIC_MACHINES) {
                 const flatSum =
                     machine.depthUpgrades.reduce((sum, u) => sum + u.cost, 0) +
                     machine.precisionUpgrades.reduce((sum, u) => sum + u.cost, 0);
@@ -354,8 +442,8 @@ describe('machines.config', () => {
         });
 
         it('Basispreise sind pro Automat proportional zur jeweiligen Ticket-Oekonomie skaliert (nicht identisch)', () => {
-            const costs = MACHINES.map((m) => m.depthUpgrades[3].cost);
-            expect(new Set(costs).size).toBe(MACHINES.length);
+            const costs = CYCLIC_MACHINES.map((m) => m.depthUpgrades[3].cost);
+            expect(new Set(costs).size).toBe(CYCLIC_MACHINES.length);
         });
 
         it('getFinalMilestoneThreshold liefert den letzten (hoechsten) Meilenstein', () => {
@@ -383,9 +471,11 @@ describe('machines.config', () => {
 
         it('daempft die Rohzahlen-Differenz, gleicht sie aber NICHT vollstaendig aus (spaetere Automaten tragen absolut mehr bei)', () => {
             // Ungedaempfter Rohzahlen-Vorsprung von Champion's Ledger gegenueber
-            // Greed Run (mittlerer payoutBig): ~1.8x. Mit Normalisierung sollte
-            // der EFFEKTIVE Vorsprung (Rohzahlen * Faktor) kleiner, aber > 1 sein.
-            const rawRatio = mean(CHAMPIONS_LEDGER.actions[0].payoutBig) / mean(GREED_RUN.actions[0].payoutBig);
+            // Greed Run (Phase 7f: Greed Run ist jetzt ein Grid-Automat, "grosser
+            // Gewinn"-Analogon ist der Bonus-Payout eines Sektors). Mit
+            // Normalisierung sollte der EFFEKTIVE Vorsprung (Rohzahlen * Faktor)
+            // kleiner, aber > 1 sein.
+            const rawRatio = mean(CHAMPIONS_LEDGER.actions[0].payoutBig) / mean(GREED_RUN.grid.payoutRanges.bonus);
             const dampedRatio = rawRatio * (CHAMPIONS_LEDGER.ticketYieldFactor / GREED_RUN.ticketYieldFactor);
             expect(dampedRatio).toBeLessThan(rawRatio);
             expect(dampedRatio).toBeGreaterThan(1);
@@ -426,7 +516,38 @@ describe('machines.config', () => {
         });
     });
 
-    describe('getMachineAttendantRate', () => {
+    describe('getMachineAttendantRate (zyklischer Zweig, unveraendert seit Phase 7d)', () => {
+        it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
+            const rate = getMachineAttendantRate(TRAP_TUNNELS, 0, [], 1);
+            expect(rate.machinePointsPerSecond).toBe(0);
+            expect(rate.hallTicketsPerSecond).toBe(0);
+        });
+
+        it('liefert eine positive Rate bei voller Musterkenntnis', () => {
+            const rate = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            expect(rate.machinePointsPerSecond).toBeGreaterThan(0);
+            expect(rate.hallTicketsPerSecond).toBeGreaterThan(0);
+        });
+
+        it('hallTicketsPerSecond skaliert mit ticketYieldFactor und dem hallenweiten ticketYieldRate-Parameter', () => {
+            const base = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const doubled = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 2);
+            expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
+        });
+
+        it('steigt mit gekauften Vorschau-Upgrades (mehr Tiefe/Praezision fuer den Attendant nutzbar)', () => {
+            const withoutUpgrades = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const withUpgrades = getMachineAttendantRate(
+                TRAP_TUNNELS,
+                1,
+                [...TRAP_TUNNELS.depthUpgrades.map((u) => u.id), ...TRAP_TUNNELS.precisionUpgrades.map((u) => u.id)],
+                1,
+            );
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
+        });
+    });
+
+    describe('getMachineAttendantRate (Grid-Zweig, Phase 7f, dokumentierte Vereinfachung)', () => {
         it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
             const rate = getMachineAttendantRate(GREED_RUN, 0, [], 1);
             expect(rate.machinePointsPerSecond).toBe(0);
@@ -445,12 +566,12 @@ describe('machines.config', () => {
             expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
         });
 
-        it('steigt mit gekauften Vorschau-Upgrades (mehr Tiefe/Praezision fuer den Attendant nutzbar)', () => {
+        it('steigt mit gekaufter Grid-Praezision (mehr Kategorien fuer den Attendant nutzbar)', () => {
             const withoutUpgrades = getMachineAttendantRate(GREED_RUN, 1, [], 1);
             const withUpgrades = getMachineAttendantRate(
                 GREED_RUN,
                 1,
-                [...GREED_RUN.depthUpgrades.map((u) => u.id), ...GREED_RUN.precisionUpgrades.map((u) => u.id)],
+                GREED_RUN.gridPrecisionUpgrades.map((u) => u.id),
                 1,
             );
             expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);

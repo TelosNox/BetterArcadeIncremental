@@ -1,9 +1,21 @@
-import type { CyclicActionDef, MachineConfig, MachineUpgradeDef, Milestone, ResolvedAction } from '../engine/types';
+import type {
+    CyclicActionDef,
+    CyclicMachineConfig,
+    GridMachineConfig,
+    GridSectorConfig,
+    MachineConfig,
+    MachineUpgradeDef,
+    Milestone,
+    ResolvedAction,
+    SectorCategory,
+} from '../engine/types';
 import {
     type AttendantRate,
     computeStationaryDistribution,
     getAttendantMachinePointsRate,
+    getGridAttendantMachinePointsRate,
 } from '../engine/AttendantEngine';
+import { SECTOR_CATEGORIES } from '../engine/GridRunEngine';
 
 // Automaten-Konfigurationen. Alle spielspezifischen Zahlen/Parameter leben
 // hier (Architektur-Kurzregel in CLAUDE.md), MachineScene.ts liest nur.
@@ -50,6 +62,32 @@ export const UNKNOWN_COLOR = 0x666666; // neutrales Grau fuer "ausserhalb der Si
 
 export function getStateColor(index: number): number {
     return STATE_COLORS[((index % STATE_COLORS.length) + STATE_COLORS.length) % STATE_COLORS.length];
+}
+
+// Phase 7f (Greed Run Genre-Rework, game-spec.md 4.2): eigene, ebenfalls
+// farbenblind-sichere Palette (Teilmenge Okabe-Ito) fuer die 4 Sektor-
+// Kategorien des Grid-Automaten -- inhaltlich unabhaengig von STATE_COLORS
+// (die an die ZYKLUS-Position gekoppelt ist, hier geht es um Kategorien).
+// Wie bei STATE_COLORS gilt CLAUDE.md "Barrierefreiheit bei Farbcodierung":
+// Farbe ist nie das einzige Merkmal -- SECTOR_SYMBOLS liefert je Kategorie
+// zusaetzlich einen kurzen, farbunabhaengigen Buchstaben (GreedRunScene.ts
+// zeichnet Farbe+Symbol immer gemeinsam).
+export const SECTOR_COLORS: Readonly<Record<SectorCategory, number>> = {
+    ghost: 0xd55e00, // Vermillion -- Gefahr
+    points: 0x56b4e9, // Sky Blue -- Standardfall
+    bonus: 0xf0e442, // Yellow -- selten, besonders wertvoll
+    empty: 0x3a3a3a, // neutrales Dunkelgrau -- kein Payout
+};
+
+export const SECTOR_SYMBOLS: Readonly<Record<SectorCategory, string>> = {
+    ghost: 'G',
+    points: 'P',
+    bonus: 'B',
+    empty: '',
+};
+
+export function getSectorColor(category: SectorCategory): number {
+    return SECTOR_COLORS[category];
 }
 
 // Feste, NICHT kaufbare Normalisierungs-Konstante pro Automat (game-spec.md
@@ -196,7 +234,7 @@ function countOwnedIn(upgrades: readonly MachineUpgradeDef[], ownedUpgradeIds: r
     return upgrades.filter((u) => ownedUpgradeIds.includes(u.id)).length;
 }
 
-export function getPreviewDepth(machine: MachineConfig, ownedUpgradeIds: readonly string[]): number {
+export function getPreviewDepth(machine: CyclicMachineConfig, ownedUpgradeIds: readonly string[]): number {
     return machine.depthUpgrades.reduce((max, u) => {
         if (u.effect.type === 'previewDepth' && ownedUpgradeIds.includes(u.id)) {
             return Math.max(max, u.effect.value);
@@ -205,7 +243,7 @@ export function getPreviewDepth(machine: MachineConfig, ownedUpgradeIds: readonl
     }, START_DEPTH);
 }
 
-export function getPreviewPrecision(machine: MachineConfig, ownedUpgradeIds: readonly string[]): number {
+export function getPreviewPrecision(machine: CyclicMachineConfig, ownedUpgradeIds: readonly string[]): number {
     return machine.precisionUpgrades.reduce((max, u) => {
         if (u.effect.type === 'previewPrecision' && ownedUpgradeIds.includes(u.id)) {
             return Math.max(max, u.effect.value);
@@ -219,7 +257,7 @@ export function getPreviewPrecision(machine: MachineConfig, ownedUpgradeIds: rea
 // der JEWEILS ANDEREN Achse (ueber deren Startwert hinaus). Kein harter
 // Ausschluss -- nur eine Bremse gegen einseitiges Rushen.
 export function getMachineUpgradeCost(
-    machine: MachineConfig,
+    machine: CyclicMachineConfig,
     upgrade: MachineUpgradeDef,
     ownedUpgradeIds: readonly string[],
 ): number {
@@ -229,35 +267,142 @@ export function getMachineUpgradeCost(
     return upgrade.cost * Math.pow(1 + CROSS_PRICE_SURCHARGE_K, otherBoughtBeyondStart);
 }
 
-export function getMachineUpgrade(machine: MachineConfig, upgradeId: string): MachineUpgradeDef | undefined {
+export function getMachineUpgrade(machine: CyclicMachineConfig, upgradeId: string): MachineUpgradeDef | undefined {
     return [...machine.depthUpgrades, ...machine.precisionUpgrades].find((upgrade) => upgrade.id === upgradeId);
 }
 
-// --- Attendant-Ertragsrate (Phase 7d, STATUS.md Teil 2) -----------------
+// --- Grid-Automat: drei unabhaengige Upgrade-Achsen (Phase 7f, game-spec.md
+// 4.2 "Drei unabhaengige Upgrade-Achsen") ---------------------------------
+//
+// Bewusst KEINE Kreuz-Preis-Kopplung wie beim zyklischen Modell (nicht Teil
+// der Spezifikation dieses Experiments, siehe STATUS.md) -- jede Achse hat
+// ihre eigene, unabhaengige Kostenleiter. Bezahlt wie depthUpgrades/
+// precisionUpgrades mit den EIGENEN Automaten-Punkten dieses Automaten
+// (MachineUpgradeDef.cost), nicht mit hallenweiten Tickets.
+
+export const START_SIGHT_RANGE = 1;
+export const MAX_SIGHT_RANGE = 4;
+export const START_GRID_PRECISION = 1;
+export const MAX_GRID_PRECISION = SECTOR_CATEGORIES.length - 1; // = 3, "bei Praezision 3 vollstaendig bekannt"
+export const START_ACTION_BUDGET = 4;
+
+const SIGHT_NUMERALS = ['I', 'II', 'III'];
+const GRID_PRECISION_NUMERALS = ['I', 'II'];
+const ACTION_BUDGET_NUMERALS = ['I', 'II', 'III', 'IV'];
+
+function buildSightRangeUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-sight-${value}`,
+        name: `${namePrefix} ${SIGHT_NUMERALS[i]}`,
+        description: `Sichtweite (Manhattan-Radius um die aktuelle Position, neu zentriert nach jedem Zug) steigt auf ${value}.`,
+        cost: baseCosts[i],
+        effect: { type: 'gridSightRange', value },
+    }));
+}
+
+function buildGridPrecisionUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-grid-precision-${value}`,
+        name: `${namePrefix} ${GRID_PRECISION_NUMERALS[i]}`,
+        description: `Loest ${value} von ${MAX_GRID_PRECISION} Kategorien pro sichtbarem Sektor zweifelsfrei auf (fokus-abhaengige Reihenfolge).`,
+        cost: baseCosts[i],
+        effect: { type: 'gridPrecision', value },
+    }));
+}
+
+function buildActionBudgetUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-action-budget-${value}`,
+        name: `${namePrefix} ${ACTION_BUDGET_NUMERALS[i]}`,
+        description: `Aktionsbudget (Zuege pro Run, unabhaengig von der Sichtweite) steigt auf ${value}.`,
+        cost: baseCosts[i],
+        effect: { type: 'gridActionBudget', value },
+    }));
+}
+
+export function getSightRange(machine: GridMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.sightRangeUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'gridSightRange' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_SIGHT_RANGE);
+}
+
+export function getGridPrecisionLevel(machine: GridMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.gridPrecisionUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'gridPrecision' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_GRID_PRECISION);
+}
+
+export function getActionBudget(machine: GridMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.actionBudgetUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'gridActionBudget' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_ACTION_BUDGET);
+}
+
+export function getGridMachineUpgrade(machine: GridMachineConfig, upgradeId: string): MachineUpgradeDef | undefined {
+    return [...machine.sightRangeUpgrades, ...machine.gridPrecisionUpgrades, ...machine.actionBudgetUpgrades].find(
+        (upgrade) => upgrade.id === upgradeId,
+    );
+}
+
+// --- Attendant-Ertragsrate (Phase 7d, STATUS.md Teil 2; Phase 7f erweitert
+// um den Grid-Automaten-Zweig) --------------------------------------------
 //
 // Komposition der reinen Engine-Mathematik (AttendantEngine.ts) mit den
-// Data-Layer-Werten dieses Automaten (Pattern/Aktionen/Vorschau-Upgrades)
-// UND dem hallenweiten Ticket-Ertragsrate-Multiplikator (hall.config.ts) --
-// lebt hier statt in AttendantEngine.ts, weil letztere laut Architektur-
-// Kurzregel nie aus /src/data importieren darf (dieselbe Konvention wie
-// resolveMachineAction/getEffectiveTrainingGain).
+// Data-Layer-Werten dieses Automaten (Pattern/Aktionen/Vorschau-Upgrades ODER
+// Grid-Kategorien/Praezisions-Upgrade, je nach `kind`) UND dem hallenweiten
+// Ticket-Ertragsrate-Multiplikator (hall.config.ts) -- lebt hier statt in
+// AttendantEngine.ts, weil letztere laut Architektur-Kurzregel nie aus
+// /src/data importieren darf (dieselbe Konvention wie
+// resolveMachineAction/getEffectiveTrainingGain). Einziger Ort, an dem
+// zwischen den beiden MachineConfig-Varianten unterschieden werden muss --
+// alle Aufrufer (economy.ts::tickAttendants, AttendantPanel.tsx,
+// MachineScene.ts) bleiben dadurch kind-agnostisch.
 export function getMachineAttendantRate(
     machine: MachineConfig,
     knowledge: number,
     ownedUpgradeIds: readonly string[],
     ticketYieldRate: number,
 ): AttendantRate {
-    const stationary = computeStationaryDistribution(machine.pattern);
-    const depthLevel = getPreviewDepth(machine, ownedUpgradeIds);
-    const precisionLevel = getPreviewPrecision(machine, ownedUpgradeIds);
-    const machinePointsPerSecond = getAttendantMachinePointsRate(
-        machine.actions,
-        stationary,
-        knowledge,
-        depthLevel,
-        precisionLevel,
-        MAX_PRECISION,
-    );
+    const machinePointsPerSecond =
+        machine.kind === 'grid'
+            ? getGridAttendantMachinePointsRate(
+                  machine.grid,
+                  knowledge,
+                  getGridPrecisionLevel(machine, ownedUpgradeIds),
+                  MAX_GRID_PRECISION,
+              )
+            : getAttendantMachinePointsRate(
+                  machine.actions,
+                  computeStationaryDistribution(machine.pattern),
+                  knowledge,
+                  getPreviewDepth(machine, ownedUpgradeIds),
+                  getPreviewPrecision(machine, ownedUpgradeIds),
+                  MAX_PRECISION,
+              );
     return {
         machinePointsPerSecond,
         hallTicketsPerSecond: machinePointsPerSecond * machine.ticketYieldFactor * ticketYieldRate,
@@ -271,7 +416,7 @@ export function getMachineAttendantRate(
 // daher am Ende ohne Partner). Reine, testbare Funktion -- reproduziert
 // exakt die Kreuz-Preis-Formel oben, nur als Summe ueber eine konkrete
 // Kaufreihenfolge statt inkrementell zur Laufzeit.
-export function computeInterleavedUpgradeCost(machine: MachineConfig): number {
+export function computeInterleavedUpgradeCost(machine: CyclicMachineConfig): number {
     const depthCosts = machine.depthUpgrades.map((u) => u.cost);
     const precisionCosts = machine.precisionUpgrades.map((u) => u.cost);
     let depthBought = 0;
@@ -307,7 +452,7 @@ export function getFinalMilestoneThreshold(machine: MachineConfig): number {
 // 85-95%, per Test verifiziert (machines.config.test.ts). Wert historisch
 // unter Phase-7c-Annahmen kalibriert (siehe STATUS.md) -- bleibt in Phase 7e
 // gueltig, da sich an den Payout-/Meilenstein-Zahlen nichts aendert.
-export function getUpgradeCostToMilestoneRatio(machine: MachineConfig): number {
+export function getUpgradeCostToMilestoneRatio(machine: CyclicMachineConfig): number {
     return computeInterleavedUpgradeCost(machine) / getFinalMilestoneThreshold(machine);
 }
 
@@ -325,52 +470,45 @@ export function isFinalMilestoneReached(machine: MachineConfig, peakScore: numbe
 }
 
 // ========================================================================
-// "Greed Run" (Automat 1, Layer-0-Einstieg) laut game-spec.md 4.2/4.1b:
-// Pac-Man-Twist, Patrouillen-Bedrohungslevel als 5-Zustands-Zyklus.
+// "Greed Run" (Automat 1, Layer-0-Einstieg) laut game-spec.md 4.2 (Phase 7f
+// Genre-Rework, 2026-07-10): 5x5-Sektorenfeld statt zyklisches Pattern.
+// Ersetzt das vorherige 5-Zustands-Zyklus-Modell VOLLSTAENDIG -- nutzt
+// PatternEngine/CyclicActionDef nicht mehr (siehe GridRunEngine.ts).
 // ========================================================================
 
-const GREED_RUN_STATES = ['fern', 'nah', 'alarm', 'sichtkontakt', 'rueckzug'];
+// 24 Nicht-Start-Sektoren: 5 Geist, 14 Punkte (Standardfall), 3 Leer,
+// 2 Bonus-Frucht (selten, game-spec.md 4.2 "Sektorinhalt"). Blind-EV-
+// Garantie (per Test in machines.config.test.ts verifiziert, gleiches
+// Prinzip wie bei den zyklischen Automaten, nur ueber die Kategorien-
+// Haeufigkeit statt einer stationaeren Markov-Verteilung gemittelt):
+// 5/24*(-8) + 14/24*4.5 + 3/24*0 + 2/24*18.5 = 2.5 > 0.
+const GREED_RUN_GRID: GridSectorConfig = {
+    gridSize: 5,
+    categoryCounts: { ghost: 5, points: 14, empty: 3, bonus: 2 },
+    payoutRanges: {
+        ghost: [-10, -6],
+        points: [3, 6],
+        empty: [0, 0],
+        bonus: [15, 22],
+    },
+    maxGhostAmongStartNeighbors: 1,
+};
 
-const GREED_RUN_ACTIONS = buildCyclicActions(GREED_RUN_STATES, [
-    { id: 'sprint', payoutBig: [16, 22], payoutSimple: [5, 8], payoutLoss: [-10, -7] },
-    { id: 'schleicher', payoutBig: [16, 22], payoutSimple: [5, 8], payoutLoss: [-10, -7] },
-    { id: 'ablenker', payoutBig: [16, 22], payoutSimple: [5, 8], payoutLoss: [-10, -7] },
-    { id: 'versteck', payoutBig: [16, 22], payoutSimple: [5, 8], payoutLoss: [-10, -7] },
-    { id: 'vorstoss', payoutBig: [16, 22], payoutSimple: [5, 8], payoutLoss: [-10, -7] },
-]);
-
-// Blind-EV-Garantie (STATUS.md Punkt 4, per it.each-Test in
-// machines.config.test.ts verifiziert): stationaere Verteilung per
-// Power-Iteration (Testwerkzeug) -- fern ~18.7%, nah ~21.7%, alarm ~21.8%,
-// sichtkontakt ~20.7%, rueckzug ~17.2%. Blind-EV je Aktion (P(Gewinn)*19 +
-// P(Verlust)*(-8.5) + P(Rest)*6.5): sprint ~6.64, schleicher ~6.41,
-// ablenker ~5.82, versteck ~5.38, vorstoss ~5.74 -- alle > 0, groesste/
-// kleinste im Verhaeltnis ~1.23 (keine Dominanz, Schwelle 1.25 siehe Test).
-export const GREED_RUN: MachineConfig = {
+export const GREED_RUN: GridMachineConfig = {
+    kind: 'grid',
     id: 'greed-run',
     name: 'Greed Run',
     theme: 'pacman-twist',
     entryPoint: true,
-    pattern: {
-        states: GREED_RUN_STATES,
-        transitions: {
-            fern: { fern: 0.3, nah: 0.4, alarm: 0.15, sichtkontakt: 0.1, rueckzug: 0.05 },
-            nah: { fern: 0.15, nah: 0.3, alarm: 0.35, sichtkontakt: 0.15, rueckzug: 0.05 },
-            alarm: { fern: 0.05, nah: 0.15, alarm: 0.3, sichtkontakt: 0.35, rueckzug: 0.15 },
-            sichtkontakt: { fern: 0.05, nah: 0.05, alarm: 0.15, sichtkontakt: 0.3, rueckzug: 0.45 },
-            rueckzug: { fern: 0.45, nah: 0.2, alarm: 0.1, sichtkontakt: 0.1, rueckzug: 0.15 },
-        },
-        baseVisibility: 1,
-        visibilityPerUpgrade: [],
-    },
-    actions: GREED_RUN_ACTIONS,
+    // Meilensteine UNVERAENDERT gegenueber dem alten Zyklus-Modell (bleiben
+    // die Skalierungs-Basis fuer Trap Tunnels/Beat Ledger/Champion's Ledger,
+    // siehe deren ticketYieldFactor-Kommentare unten).
     milestones: [{ threshold: 20 }, { threshold: 50 }, { threshold: 100 }],
-    // Basispreise (STATUS.md Punkt 7, Ausgangsbasis fuer die Skalierung der
-    // anderen drei Automaten): total interleaved Kosten ~89.3 Tickets bei
-    // Schwelle 100 -> 89.3% (Zielkorridor 85-95%, per Test verifiziert).
-    depthUpgrades: buildDepthUpgrades('greed-run', 'Streckenkenntnis', [2, 4, 8, 18]),
-    precisionUpgrades: buildPrecisionUpgrades('greed-run', 'Scharfblick', [3, 6, 16]),
-    ticketYieldFactor: ticketYieldFactorFor(1.0), // = 1.0, Skalierungs-Basis
+    grid: GREED_RUN_GRID,
+    sightRangeUpgrades: buildSightRangeUpgrades('greed-run', 'Weitblick', [2, 3, 4], [3, 7, 15]),
+    gridPrecisionUpgrades: buildGridPrecisionUpgrades('greed-run', 'Spuersinn', [2, 3], [4, 10]),
+    actionBudgetUpgrades: buildActionBudgetUpgrades('greed-run', 'Ausdauer', [6, 9, 13, 18], [3, 6, 12, 24]),
+    ticketYieldFactor: ticketYieldFactorFor(1.0), // = 1.0, Skalierungs-Basis (unveraendert)
 };
 
 // ========================================================================
@@ -392,7 +530,8 @@ const TRAP_TUNNELS_ACTIONS = buildCyclicActions(TRAP_TUNNELS_STATES, [
 // einsturz ~18.9%, verschuettet ~19.5%, freigelegt ~18.4%. Blind-EV je
 // Aktion zwischen ~7.68 (a2/stuetzpfeiler) und ~8.96 (a5/notausstieg),
 // Verhaeltnis ~1.17 -- alle > 0, keine Dominanz.
-export const TRAP_TUNNELS: MachineConfig = {
+export const TRAP_TUNNELS: CyclicMachineConfig = {
+    kind: 'cyclic',
     id: 'trap-tunnels',
     name: 'Trap Tunnels',
     theme: 'digdug-twist',
@@ -436,7 +575,8 @@ const BEAT_LEDGER_ACTIONS = buildCyclicActions(BEAT_LEDGER_STATES, [
 // Blind-EV-Garantie: stationaere Verteilung ruhig ~21.3%, treibend ~20.3%,
 // doppelschlag ~18.8%, synkope ~19.7%, break ~19.8%. Blind-EV zwischen
 // ~9.46 (b2/doppelkombo) und ~10.33 (b5/standakkord), Verhaeltnis ~1.09.
-export const BEAT_LEDGER: MachineConfig = {
+export const BEAT_LEDGER: CyclicMachineConfig = {
+    kind: 'cyclic',
     id: 'beat-ledger',
     name: 'Beat Ledger',
     theme: 'ddr-twist',
@@ -485,7 +625,8 @@ const CHAMPIONS_LEDGER_ACTIONS = buildCyclicActions(CHAMPIONS_LEDGER_STATES, [
 // (c2/konter), Verhaeltnis ~1.08 -- am ausgeglichensten aller vier
 // Automaten (passend zum letzten/komplexesten Automaten: kein Pattern-
 // Ausreisser, den man blind ausnutzen koennte).
-export const CHAMPIONS_LEDGER: MachineConfig = {
+export const CHAMPIONS_LEDGER: CyclicMachineConfig = {
+    kind: 'cyclic',
     id: 'champions-ledger',
     name: "Champion's Ledger",
     theme: 'street-fighter-twist',
