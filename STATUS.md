@@ -4,8 +4,181 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7h (Greed Run Rundenstruktur-Korrektur, siehe "Ergebnis"-Abschnitt unten) — ein Run besteht jetzt aus genau EINER Planungs-+Ausführungsphase, "Los" beendet ihn immer, unabhängig vom Restbudget; der nächste Run startet direkt wieder im Mittelfeld. `npm test`/`npm run lint`/`npx tsc --noEmit` grün (Testcount unverändert 273, wie erwartet — reine Scene-Verhaltenskorrektur), per Playwright-Smoke-Test visuell bestätigt (Teil-Plan mit 2 von 4 Zügen ausgeführt → Run endet sofort, neuer Run startet frisch im Zentrum mit vollem Budget) — **noch nicht vom Nutzer im erneuten Playtest bestätigt**.
-**Läuft/als Nächstes:** Erneuten Playtest der Rundenstruktur-Korrektur abwarten, erst danach Entscheidung über Trap Tunnels/Beat Ledger/Champion's Ledger im selben Stil. Bekannte, bewusst weiterhin nicht behobene Punkte: (1) Progression/Balance-Tuning bleibt zurückgestellt; (2) Aktionsbudget-Upgrades wirken erst ab dem NÄCHSTEN Run (unverändert gültig, jetzt sogar konsistenter, da ein Run ohnehin nur noch eine Planungsphase umfasst). Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7i (Trap Tunnels Genre-Rework, siehe unten) — Automat 2 komplett neu als Tunnelnetz-Fallen-Automat gebaut, ersetzt die alte Zyklus-Mechanik vollständig. Implementiert, alle automatisierten Checks grün. **Noch nicht vom Nutzer selbst gespielt/bestätigt.**
+**Läuft/als Nächstes:** Auf Nutzer-Rückmeldung zu Phase 7i warten (Abnahmekriterien siehe Ergebnis-Abschnitt unten), danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7i: Trap Tunnels Genre-Rework (2026-07-10, mit Nutzer abgestimmt, zweites Experiment)
+
+Nach dem erfolgreichen Greed-Run-Umbau (Phase 7f-7h) jetzt Automat 2 ("Trap Tunnels") im selben "von der Genre-Essenz her denken"-Stil, aber bewusst mit einer STRUKTURELL anderen Mechanik als Greed Run — explizite Nutzer-Vorgabe: "das Gleiche in Grün" ist unerwünscht, Ähnlichkeiten sind ok, aber es muss sich anders anfühlen.
+
+Vollständige Spezifikation: `docs/game-spec.md` Abschnitt 4.3 (komplett neu geschrieben) — hier nur die Zusammenfassung für Claude Code:
+
+1. **Kein Spieler-Avatar, der sich bewegt.** Stattdessen: ein Tunnelnetz aus Kreuzungen (Graph), 2 Gegner laufen pro Run entlang je eines EIGENEN, bei Run-Start fest generierten Pfads durch das Netz. Spieler platziert vor der Ausführung eine begrenzte Anzahl Fallen auf Kreuzungen. Kernrisiko-Achse: Kettenreaktion, wenn zwei Gegner im selben Ausführungsschritt auf dieselbe Falle treffen (deutlich höherer Payout als Einzelfang) — das war schon in der ursprünglichen game-spec.md-Fassung als Risiko-Achse vorgesehen, kam in der alten Zyklus-Mechanik aber nie zum Tragen.
+2. **Netz-Generierung (fest pro Run):** 4×4-Kreuzungs-Raster (16 Kreuzungen). Zufälliger Spannbaum (garantiert alle Kreuzungen erreichbar) + 3-4 zusätzliche zufällige Kanten für Schleifen. Pro Gegner ein fester Pfad per Zufalls-Walk (Länge ~6, Start-Kreuzungen mit Mindestabstand zueinander).
+3. **Zwei Upgrade-Achsen:** Vorschau-Reichweite (Start 1, wie viele nächste Schritte JEDES Gegner-Pfads sichtbar sind — WICHTIG, Lektion aus Phase 7g: an den jeweiligen Gegner-Pfad/Startpunkt gekoppelt, NICHT an eine sich verschiebende Position, da es keine Spielerposition gibt) und Fallenanzahl (Start 1, wie viele Fallen gleichzeitig platzierbar sind).
+4. **Kein Fokus-Wahl-Analogon in dieser Version** (bewusst zurückgestellt, wie Greed Runs Powerpille).
+5. **Payout:** Einzelfang = klein positiv, Kettenreaktion = deutlich größerer Multiplikator, nicht getroffene Falle = 0 (kein negativer Payout-Fall nötig — Risiko ist Opportunitätskosten, bewusst anderes Risikomodell als Greed Runs Geist, kein Bug).
+6. **Rundenstruktur von Anfang an nach der Phase-7h-Lektion gebaut:** genau eine Planungs- + Ausführungsphase pro Run, "Los" beendet den Run immer unwiderruflich, danach sofort neues Netz + neue Pfade.
+7. **Blind-EV-Garantie per Simulation** (nicht geschlossene Formel) automatisiert prüfen.
+8. **Attendant:** gleiche Art Platzhalter-Vereinfachung wie bei Greed Run, dokumentiert.
+9. **Ökonomie/Meilensteine/Speicherstand:** geteilt, Meilenstein-Schwellen (25/60/120) und `ticketYieldFactor` (~0.913) aus der bisherigen `TRAP_TUNNELS`-Config unverändert übernehmen.
+10. **Architektur:** eigene Szene `TrapTunnelsScene.ts`, `sceneRouting.ts` erweitern, `milestonePips.ts` wiederverwenden. Automaten 3-4 bleiben unverändert.
+11. **Barrierefreiheit:** Fallen als eigene Form (nicht nur Farbe), Gegner A/B über Farbe UND Buchstabe unterschieden.
+12. **Speicherstand:** `CURRENT_SAVE_VERSION` erneut erhöhen, alte Saves ablehnen.
+
+**Bewusst NICHT Teil dieser Phase:** Beat Ledger/Champion's Ledger bleiben unangetastet. Fokus-Wahl-Analogon, negativer Payout-Fall, mehr als 2 Gegner, anderes Netz als 4×4 — alle als Backlog vorgemerkt, nicht jetzt bauen.
+
+### Ergebnis: Phase 7i umgesetzt (2026-07-10)
+
+Reihenfolge wie in CLAUDE.md gefordert: Engine-Logik zuerst mit Vitest
+abgesichert, danach an Phaser angebunden. Mehrere Zwischen-Commits vorgesehen
+(noch nicht ausgeführt, siehe unten -- Commits erfolgen erst nach expliziter
+Nutzer-Bestätigung dieser Zusammenfassung, wie in den Session-Regeln
+vorgesehen).
+
+**`src/engine/types.ts`:** `CURRENT_SAVE_VERSION` 4 → 5 (Automat 2 wechselt
+von `kind: 'cyclic'` auf `kind: 'trapTunnels'`, alte
+`machineUpgrades['trap-tunnels']`-Eintraege wuerden sonst auf nicht mehr
+existierende Upgrade-ids zeigen) -- wie immer bewusst KEINE Migration, alte
+Saves werden beim Laden abgelehnt (SaveSystem.test.ts um einen Rejection-Test
+fuer saveVersion 4 ergaenzt). Neue Typen `TrapTunnelsRunConfig` (Netz-/Pfad-/
+Payout-Parameter als EIN Bundle-Objekt, analog zu `GridSectorConfig`) und
+`TrapTunnelsMachineConfig` (`kind: 'trapTunnels'`, `run` + zwei Upgrade-
+Leitern `trapPreviewRangeUpgrades`/`trapCountUpgrades`) -- `MachineConfig`
+ist jetzt eine dreifache Union (`CyclicMachineConfig | GridMachineConfig |
+TrapTunnelsMachineConfig`). `MachineUpgradeEffect` um `trapPreviewRange`/
+`trapCount` erweitert, additiv wie bei den Grid-Varianten.
+
+**`src/engine/TrapTunnelsEngine.ts`+Test (neu, 34 Tests):** Komplett neues,
+framework-unabhaengiges Modul (kennt weder Phaser noch React noch
+`/src/data`) -- ersetzt `PatternEngine`/`CyclicActionDef` fuer Trap Tunnels
+vollstaendig. `generateNetwork` (randomisiertes Kruskal ueber die moeglichen
+4×4-Gitterkanten fuer einen Spannbaum, garantiert Erreichbarkeit aller 16
+Kreuzungen, danach 3-4 zufaellige Zusatzkanten aus den uebrig gebliebenen
+Kandidaten). `pickEnemyStartJunctions` (weiche->tatsaechlich harte
+Mindestabstands-Korrektur: durchsucht eine gemischte Kreuzungs-Reihenfolge
+nach dem ersten Paar, das die Mindestdistanz einhaelt, faellt sonst auf das
+am weitesten entfernte gefundene Paar zurueck -- analog zu GridRunEngines
+`enforceStartNeighborSafety`-Konvention, garantiert die Distanz-Regel
+strukturell statt nur wahrscheinlich). `generateEnemyPath` (Zufalls-Walk fixer
+Laenge, vermeidet Kantenwiederholung wo moeglich). `resolveTraps` (reine
+Funktion: prueft pro Ausfuehrungsschritt, welche Gegner auf einer Falle
+stehen -- zwei Gegner im SELBEN Schritt an DERSELBEN Falle ergeben EIN
+Kettenreaktions-Ereignis statt zwei Einzelereignissen). `computeBlindTrap
+ExpectedValue` (Blind-EV-Garantie PER SIMULATION ueber viele Seeds, wie vom
+Prompt gefordert -- mittelt ueber `trials`-viele komplette Netz-/Pfad-Runs
+mit einer blind auf eine zufaellige Kreuzung gesetzten Falle; da diese
+Version KEINEN negativen Payout-Fall kennt, ist die Garantie strukturell
+erfuellt, sobald die Trefferwahrscheinlichkeit > 0 ist -- die Simulation
+verifiziert das trotzdem explizit ueber 3000 echte `Math.random()`-Trials,
+statt sich nur auf dieses Argument zu verlassen). Klasse `TrapTunnelsEngine`
+(zustandsbehaftet wie `GridRunEngine`, haelt Netz + feste Gegner-Pfade + die
+waehrend der Planungsphase mutierende Fallen-Platzierung).
+
+**`src/engine/AttendantEngine.ts`+Test (+7 Tests, bewusste Vereinfachung wie
+in game-spec.md 4.3 gefordert):** Neue Funktionen `getTrapTunnelsBlindExpected
+ValuePerTrap`/`getTrapTunnelsAttendantExpectedValuePerTrap`/`getTrapTunnels
+AttendantMachinePointsRate` -- bewusst OHNE Wiederverwendung der Monte-Carlo-
+Simulation aus TrapTunnelsEngine (die waere fuer einen bei jedem Tick
+aufgerufenen Ertragsraten-Pfad zu teuer), stattdessen eine geschlossene
+Naeherung: jede Gegner-Position ueber den Run gilt als unabhaengig
+gleichverteilt unter den Kreuzungen, daraus ergeben sich Treffer-/
+Kettenwahrscheinlichkeit einer einzelnen blind platzierten Falle in
+geschlossener Form. Dieselbe Interpolations-IDEE wie beim Grid-Zweig (linear
+zwischen Blind-EV und einer Perfekt-Info-EV, gewichtet mit dem Anteil
+genutzter Vorschau-Reichweite) -- Perfekt-Info hier: garantierter Einzelfang
+pro Falle, OHNE echte Chain-Optimierung (explizit als Vereinfachung
+dokumentiert).
+
+**`src/data/machines.config.ts`+Test:** `TRAP_TUNNELS` komplett neu als
+`TrapTunnelsMachineConfig` -- 4×4-Netz, Pfadlaenge 6, 2 Gegner,
+Mindestabstand 3, `singleCatchPayoutRange` [7,12], `chainCatchPayoutRange`
+[24,34] (deutlich groesser als Einzelfang, wie gefordert). Meilenstein-
+Schwellen (25/60/120) und `ticketYieldFactor` (~0.913) UNVERAENDERT aus der
+bisherigen Config uebernommen, wie explizit gefordert. Zwei neue Upgrade-
+Leitern: `trapPreviewRangeUpgrades` (1→2→4→6, Kosten 4/8/18 Automaten-Punkte
+-- Stufe 6 deckt sich mit der Pfadlaenge, volle Sicht auf den Restpfad),
+`trapCountUpgrades` (1→2→3, Kosten 5/12) -- bewusst OHNE Kreuz-Preis-Kopplung,
+wie beim Grid-Automaten. Neue Konstanten `ENEMY_COLORS`/`ENEMY_LABELS`/
+`getEnemyColor`/`getEnemyLabel` (Okabe-Ito-Teilmenge, A/B-Buchstaben) und
+`TRAP_COLOR` fuer die Szene. `getMachineAttendantRate` dispatcht jetzt
+dreifach nach `machine.kind` (cyclic/grid/trapTunnels) -- weiterhin der
+einzige Ort im Code, der zwischen den `MachineConfig`-Varianten unterscheidet,
+alle Aufrufer bleiben kind-agnostisch. `machines.config.test.ts`: `TRAP_
+TUNNELS` aus `CYCLIC_MACHINES` entfernt (jetzt nur noch Beat Ledger/
+Champion's Ledger), alle generischen Kreuz-Preis-/Vorschau-Tests, die vorher
+`TRAP_TUNNELS` als Stellvertreter fuer "irgendein zyklischer Automat"
+nutzten, laufen jetzt ueber `BEAT_LEDGER`. Neuer Testblock "Trap Tunnels
+(Tunnelnetz-Fallen-Automat)" analog zum bestehenden Greed-Run-Block. Netto-
+Testcount insgesamt **321** (vorher 273 nach Phase 7f) -- Zuwachs durch das
+komplett neue `TrapTunnelsEngine.test.ts` (34), neue Zweige in
+`AttendantEngine.test.ts` (+7) sowie den neuen Trap-Tunnels-Block in
+`machines.config.test.ts`.
+
+**`src/game/sceneRouting.ts`:** Um den Fall `trap-tunnels` -> `'TrapTunnels'`
+erweitert (Boot.ts/TransitionScene.ts brauchten keine Aenderung, da Trap
+Tunnels nicht der entryPoint-Automat ist und daher nie direkt von dort
+angesteuert wird).
+
+**`src/game/scenes/TrapTunnelsScene.ts`** (neu): Eigene Szene, ersetzt
+`MachineScene.ts` fuer Automat 2 vollstaendig -- geteilte Buchhaltung
+(`economyStore`/`persist`/`getReachedMilestones`/Meilenstein-Pips via
+`milestonePips.ts`) exakt wie bei `GreedRunScene.ts` wiederverwendet, nicht
+dupliziert.
+- *Rundenstruktur (direkt mit der Phase-7h-Lektion gebaut, nicht erst
+  nachtraeglich korrigiert):* GENAU eine Planungs- + Ausfuehrungsphase pro
+  Run. Kein Fokus-Popup/keine "beibehalten"-Checkbox (kein Fokus-Wahl-
+  Analogon in dieser Version) -- ein neuer Run startet nach jeder Ausfuehrung
+  IMMER automatisch, ohne Zwischenschritt.
+- *Netz-Darstellung:* 4×4-Kreuzungen als Kreise (klickbar in der
+  Planungsphase, toggeln eine Falle direkt -- bewusst KEIN "Letzten
+  entfernen"-Button wie bei Greed Run, da die Reihenfolge der Platzierung
+  irrelevant ist, nur die finale Menge zaehlt), Kanten als Linien. Platzierte
+  Fallen als um 45° gedrehtes Quadrat (Raute) statt Kreis -- eigene FORM,
+  nicht nur eigene Farbe (CLAUDE.md-Barrierefreiheits-Grundsatz).
+- *Gegner-Vorschau:* Planungsphase zeigt je Gegner die naechsten
+  (Vorschau-Reichweite)-vielen Schritte AB der festen Start-Kreuzung
+  (`getVisiblePathPositions`) als kleine Marker mit Farbe UND Buchstabe UND
+  Schritt-Nummer; Ausfuehrungsphase zeigt nur die aktuelle Position jedes
+  Gegners im laufenden Schritt. Gegner A/B ueber `ENEMY_COLORS` UND
+  `ENEMY_LABELS` unterschieden (Barrierefreiheits-Grundsatz), nie nur ueber
+  Farbe.
+- *Ausfuehrung:* alle Fallen-Ereignisse werden EINMAL bei "Los" ueber
+  `engine.resolve()` ermittelt (die Platzierung steht ab da fest), die
+  Animation liest pro Schritt (700ms Delay, wie bei den anderen Automaten)
+  nur noch daraus und verbucht Punkte/Tickets sofort ueber
+  `EconomyStore.applyMachineScoreDelta`/`addHallTickets`.
+- *Musterkenntnis-Zuwachs:* da es keine einzelnen Spieler-Zuege wie bei Greed
+  Run gibt, zaehlt die Anzahl PLATZIERTER FALLEN pro Run als Entsprechung zu
+  "Anzahl manueller Aktionen" (einmal `gainKnowledgeFromManualPlay` pro
+  platzierter Falle bei Ausfuehrungsstart) -- als bewusste Design-Entscheidung
+  im Code kommentiert.
+- *Upgrade-Shop/Attendant-Status/"Zur Halle"-Button:* strukturell identisch
+  zu `GreedRunScene.ts` uebernommen (zwei Upgrade-Leitern statt drei, sonst
+  gleiches Muster).
+
+**`src/game/main.ts`:** `TrapTunnelsScene` zur `scene`-Liste hinzugefuegt.
+
+**Verifiziert:** `npm test` (**321/321 gruen**), `npm run lint` sauber,
+`npx tsc --noEmit` sauber, `npm run build` erfolgreich. Zusaetzlich per
+Playwright-Skript gegen `npm run dev-nolog` (Skript + temporaere Playwright-
+Installation danach wieder entfernt, nicht Teil des Repos/package.json) mit
+Screenshots visuell geprueft: vorbereiteter Speicherstand (Greed Run bereits
+durchgespielt, Trap Tunnels freigeschaltet) -> Halle -> Trap Tunnels zeigt
+sofort ein frisches 4×4-Netz mit beiden Gegner-Vorschauen (A0/A1, B0/B1,
+Farbe+Buchstabe+Schrittnummer korrekt), Legende und Upgrade-Shop korrekt;
+Klick auf eine Kreuzung platziert eine Raute, uebrige Kreuzungen werden bei
+erreichtem Fallenlimit korrekt inaktiv (dunkler), "Los!"-Button wird aktiv
+(gruen); Ausfuehrung animiert beide Gegner Schritt fuer Schritt (700ms),
+Feedback-Text zeigt "Schritt X: keine Falle ausgeloest."/Einzelfang-Meldung
+korrekt, Punktestand stieg im Test-Lauf von 2.0 auf 9.5 (ein Einzelfang,
+Payout innerhalb der konfigurierten Spanne); nach Ausfuehrungsende startet
+automatisch ein komplett neues Netz mit neuen Gegner-Pfaden, Fallenzahl
+zurueckgesetzt auf 0, Upgrade-Shop-Kosten korrekt gegen den neuen
+Punktestand geprueft (jetzt leistbar, lila statt grau). Keine
+Konsolenfehler ueber den gesamten Testlauf. **Noch nicht vom Nutzer selbst
+gespielt/bestaetigt** -- das ist der naechste Schritt, kein automatisierter
+Ersatz dafuer.
 
 ## NEUE PHASE 7h: Greed Run Rundenstruktur-Korrektur (2026-07-10)
 

@@ -235,11 +235,40 @@ mehr selbst auswerten. Verbindliche Korrekturen:
 
 - **Warum Layer-0-Kandidat:** Kernidee (Risiko vs. Gier beim Sammeln) ist ohne Erklärung sofort verständlich — gilt mit dem neuen Feld-Modell unverändert weiter.
 
-### 4.3 Automat 2 — "Trap Tunnels" (Dig-Dug/Q*bert-Twist)
+### 4.3 Automat 2 — "Trap Tunnels" (Dig-Dug/Q*bert-Twist, ab 2026-07-10 eigene Mechanik — Genre-Rework, zweiter Versuch nach Greed Run)
 
-- **Thema:** Fallen werden vorab in einem unterirdischen Raster platziert, Gegner bewegen sich deterministisch entlang ableitbarer Pfade
-- **Pattern-Basis:** Am wenigsten Zufall der vier Automaten – nahezu vollständig aus dem Tunnellayout ableitbar, daher der "reinste" Skill-Test
-- **Risiko-Achse:** Fallen früh/sicher platzieren vs. auf Ketten-Reaktionen mit mehreren Gegnern warten (höherer Multiplikator, höheres Fehlschlagsrisiko)
+**Ersetzt ab hier die gemeinsame Zyklus-Mechanik aus 4.1/4.1b/4.1c vollständig für Automat 2.** Automaten 3–4 bleiben vorerst unverändert bei 4.1/4.1b/4.1c. Bewusst strukturell ANDERS als Greed Run (4.2), nicht "dasselbe in Grün": kein eigener Avatar, der sich bewegt und Felder aufdeckt — stattdessen Vorhersage + Platzierung gegen fremde, feste Bewegung.
+
+**Kernidee:** Ein Tunnelnetz aus Kreuzungen (Graph, kein reines Kachelfeld). Der Spieler bewegt sich nicht selbst. Stattdessen laufen pro Run 2 Gegner entlang eines je EIGENEN, bei Run-Start fest vorab generierten Pfads durch das Netz (dasselbe "festes Pattern pro Run"-Prinzip wie überall sonst im Spiel). Der Spieler platziert vor der Ausführung eine begrenzte Anzahl Fallen auf Kreuzungen. Trifft ein Gegner beim Ablaufen seines Pfads eine Falle, wird er gefangen (Payout). Treffen ZWEI Gegner im selben Ausführungsschritt auf dieselbe Falle, gibt es eine Kettenreaktion mit deutlich höherem Payout als ein Einzelfang — das ist die zentrale Risiko-Achse dieses Automaten.
+
+**Tunnelnetz-Generierung (pro Run einmalig fest, wie Greed Runs Feldinhalt):** 4×4-Kreuzungs-Raster (16 Kreuzungen). Erst ein zufälliger Spannbaum über alle 16 Kreuzungen (garantiert: jede Kreuzung ist erreichbar), danach 3–4 zusätzliche zufällige Kanten obendrauf (für Schleifen/Alternativrouten, macht das Netz interessanter als ein reiner Baum). Für jeden der 2 Gegner: ein fester Pfad durch dieses Netz per Zufalls-Walk ab einer Start-Kreuzung (Länge fix, z. B. 6 Schritte, nach Möglichkeit ohne Kantenwiederholung) — Start-Kreuzungen der beiden Gegner mit Mindestabstand zueinander ziehen, damit sich ihre Pfade überhaupt kreuzen können.
+
+**Sicherheits-/Fairness-Constraint (weich, analog zu Greed Runs Nachbarschafts-Regel):** Pfadlänge fix genug (z. B. mindestens 6 Kreuzungen), damit in jedem Run genügend Kreuzungen tatsächlich von mindestens einem Gegner besucht werden — verhindert Runs, in denen fast das ganze Netz irrelevant ist.
+
+**Blind-Erwartungswert-Garantie (automatisiert zu prüfen, per Simulation über viele Seeds statt geschlossener Formel — passt zur bereits etablierten Konvention aus Phase 7f für schwer geschlossen berechenbare Wahrscheinlichkeiten):** Eine Falle komplett blind (ohne jede genutzte Vorschau) auf eine zufällige Kreuzung gesetzt muss im Erwartungswert positiv sein.
+
+**Zwei unabhängige, ticket-finanzierte Upgrade-Achsen** (Namensgebung/Framing bleibt Ermessen von Claude Code, technisch aber klar definiert):
+
+1. **Vorschau-Reichweite** (Start bei 1, z. B. bis 4): wie viele der nächsten Schritte JEDES Gegner-Pfads im Voraus sichtbar sind — bei voller Stufe der komplette restliche Pfad. Analog zu Greed Runs Sichtweite, aber bezogen auf feste Gegner-Pfade statt auf ein Kachelfeld, und bewusst NICHT an eine Spielerposition gekoppelt (es gibt keine) — Lektion aus Greed Run (Phase 7g): Vorschau muss an einem festen Bezugspunkt hängen, hier ist das der jeweilige Gegner-Startpunkt/Pfad selbst, nicht irgendetwas, das sich verschiebt.
+2. **Fallenanzahl** (Start bei 1, z. B. bis 3): wie viele Fallen gleichzeitig platzierbar sind, bevor "Los" gedrückt wird.
+
+**Kein Fokus-Wahl-Analogon (Sicher/Gier) in dieser ersten Version** — bewusst zurückgestellt, wie auch Greed Runs Powerpille zurückgestellt wurde, um nicht zu viele neue Konzepte auf einmal einzuführen. Kann später ergänzt werden, falls der Playtest das nahelegt.
+
+**Payout:** Einzelfang (ein Gegner läuft in eine Falle) = kleiner positiver Payout. Kettenreaktion (zwei Gegner im selben Schritt an derselben Falle) = deutlich größerer positiver Payout (Multiplikator auf den Einzelfang, genaue Zahl Ermessen Claude Code, Zielkorridor wie immer iterativ zu tunen). Eine Falle, die bis Run-Ende von keinem Gegner getroffen wird, zahlt nichts aus (0) — KEIN negativer Payout-Fall nötig in dieser Version (anders als Greed Runs Geist): das Risiko ist Opportunitätskosten (eine riskant auf eine ungewisse Kreuzung gesetzte Falle bringt im schlechtesten Fall einfach nichts), nicht ein direkter Verlust. Bewusste Design-Entscheidung, kein Bug, keine Inkonsistenz zu Greed Run — unterschiedliche Automaten dürfen unterschiedliche Risikomodelle haben.
+
+**Rundenstruktur (direkt mit der Lektion aus Phase 7h gebaut, nicht erst nachträglich korrigiert):** Ein Run besteht aus GENAU EINER Planungs- + Ausführungsphase. Planungsphase: bis zu (Fallenanzahl)-viele Fallen auf sichtbaren Kreuzungen platzieren, frei wieder entfernbar vor "Los". "Los" löst die Ausführung aus (beide Gegner laufen ihren Pfad synchron Schritt für Schritt ab, animiert, kein Echtzeit-Reflex nötig) und beendet den Run danach unwiderruflich. Direkt danach startet immer ein neuer Run mit frisch generiertem Tunnelnetz und neuen Gegner-Pfaden.
+
+**Attendant-Automatisierung:** Wie bei Greed Run (game-spec.md 4.2) passt die zyklische Markov-Mathematik nicht. Grob vereinfachte Platzhalter-Schätzung reicht (z. B. Erwartungswert aus Blind-Trefferwahrscheinlichkeit + Vorschau-Reichweite/Fallenanzahl interpoliert, ohne echte Pfad-Optimierung) — als bewusste Vereinfachung dokumentieren, analog zu Greed Runs Attendant-Kommentar.
+
+**Ökonomie-Anbindung** (Tickets/Automaten-Punkte-Ausschüttung, Meilenstein-Pips, Speicherstand) bleibt technisch unverändert — Meilenstein-Schwellen (25/60/120) und `ticketYieldFactor` (~0.913) UNVERÄNDERT aus der bisherigen Config übernehmen, nur die Zug-/Ausführungslogik und Vorschau sind neu.
+
+**Architektur-Konsequenz:** Eigene Phaser-Szene (z. B. `TrapTunnelsScene.ts`), analog zu `GreedRunScene.ts` — `sceneRouting.ts` um den Fall `trap-tunnels` erweitern. `EconomyStore`/`SaveSystem`/Meilenstein-Anbindung bleiben geteilt (`milestonePips.ts` wiederverwenden, nicht duplizieren). Automaten 3–4 bleiben unverändert auf `MachineScene.ts`.
+
+**Barrierefreiheit (CLAUDE.md-Grundsatz, gilt unverändert):** Fallen als eigene Form (z. B. Raute, nicht nur Farbe) darstellen. Die beiden Gegner farblich UND über Buchstaben (A/B) unterscheiden, nie nur über Farbe.
+
+**Speicherstand:** `CURRENT_SAVE_VERSION` erneut erhöhen, alte Spielstände beim Laden ablehnen statt migrieren (etabliertes Vorgehen).
+
+**Ausdrücklich noch nicht Teil dieser Version:** Fokus-Wahl-Analogon, negativer Payout-Fall, mehr als 2 Gegner, größeres/anderes Netz als 4×4. Alle als mögliche spätere Erweiterung vorgemerkt, nicht jetzt bauen.
 
 ### 4.4 Automat 3 — "Beat Ledger" (DDR/Whac-a-Mole-Twist)
 
