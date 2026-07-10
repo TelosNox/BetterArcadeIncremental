@@ -4,8 +4,62 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7f (Greed Run Genre-Rework, siehe "Ergebnis"-Abschnitt unten) — Automat 1 ("Greed Run") komplett neu als 5×5-Sektorenfeld gebaut, ersetzt die bisherige Zyklus-Mechanik vollständig; Automaten 2–4 unverändert auf dem alten Modell/`MachineScene.ts`. `npm test`/`npm run lint`/`npx tsc --noEmit` grün, zusätzlich per Playwright-Smoke-Test gegen den echten Dev-Server verifiziert (siehe unten) — **noch nicht vom Nutzer im Playtest bestätigt**, das ist der nächste Schritt.
-**Läuft/als Nächstes:** Rückmeldung zum Greed-Run-Genre-Rework abwarten (spielt es sich wie eine eigene Genre-Idee statt austauschbarem Skin?), bevor entschieden wird, ob Trap Tunnels/Beat Ledger/Champion's Ledger im selben Stil überarbeitet werden. Bekannte, bewusst nicht in dieser Phase behobene Punkte: (1) Progression/Balance-Tuning bleibt weiterhin zurückgestellt (unverändert seit Phase 7d/7e); (2) Aktionsbudget-Upgrades wirken erst ab dem NÄCHSTEN Lauf, nicht rückwirkend auf den laufenden (Sichtweite/Präzision dagegen sofort, siehe unten) — bewusste, dokumentierte Vereinfachung, kein Bug. Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7g (Greed Run Korrekturen nach Playtest, siehe "Ergebnis"-Abschnitt unten) — Sichtweite jetzt fix am Startsektor verankert statt an der aktuellen Position, Präzisions-Symbole zeigen jetzt die noch möglichen statt der ausgeschlossenen Kategorien. Reine Klarheits-/Verhaltenskorrektur an Phase 7f, keine neuen Mechaniken. `npm test`/`npm run lint`/`npx tsc --noEmit` grün, per Playwright-Smoke-Test gegen den echten Dev-Server visuell verifiziert — **noch nicht vom Nutzer im erneuten Playtest bestätigt**, das ist der nächste Schritt.
+**Läuft/als Nächstes:** Erneuten Playtest der beiden Korrekturen abwarten, erst danach Entscheidung über Trap Tunnels/Beat Ledger/Champion's Ledger im selben Stil. Bekannte, bewusst weiterhin nicht behobene Punkte: (1) Progression/Balance-Tuning bleibt zurückgestellt; (2) Aktionsbudget-Upgrades wirken erst ab dem NÄCHSTEN Lauf (bewusste Vereinfachung, kein Bug). Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7g: Greed Run Korrekturen nach Playtest (2026-07-10)
+
+Nutzer-Feedback nach dem ersten echten Playtest von Phase 7f, zwei gezielte Korrekturen (kein neues Feature, Feinschliff an Bestehendem):
+
+1. **Sichtweite fix am Startsektor verankern, nicht an der aktuellen Position.** Bisher (`GreedRunScene.renderGrid` → `this.runEngine.getVisibleSectors(sightRange)`) wandert der sichtbare Bereich bei jeder Bewegung mit der Spielerposition mit — im Spiel verwirrend. Korrektur: der sichtbare Bereich ist ein Manhattan-Radius um den STARTSEKTOR (`getStartPosition(gridSize)`), bleibt für den gesamten Run unverändert. Wer den sichtbaren Bereich verlässt, läuft komplett blind weiter (das ist gewollt, kein zusätzlicher Constraint nötig). `docs/game-spec.md` 4.2 bereits entsprechend korrigiert.
+2. **Präzisions-Symbole zeigen künftig die noch MÖGLICHEN Kategorien, nicht die ausgeschlossenen.** Bisher (`renderGrid`, `knowledge.excluded.forEach(...)`) wurden pro Sektor kleine Punkte für bereits ausgeschlossene Kategorien gezeichnet — für den Spieler nicht eindeutig, ob die Punkte "das ist es noch" oder "das ist es NICHT" bedeuten. Korrektur: stattdessen die noch möglichen Kategorien zeigen (`SECTOR_CATEGORIES` minus `knowledge.excluded`), mit Farbe UND Kategorie-Buchstabe (nicht nur Farbe, wie beim übrigen Barrierefreiheits-Grundsatz). Bei Präzision 0 (noch nichts ausgeschlossen) weiterhin nur das neutrale "?" ohne Symbole zeigen, sonst zu viel Unordnung ohne Informationsgewinn. Legende (`renderLegend`) um eine kurze erklärende Zeile ergänzen, die diese Konvention explizit benennt.
+
+**Bewusst NICHT Teil dieser Korrektur:** keine neuen Mechaniken, keine Balance-Änderungen — reine Klarheits-/Verhaltenskorrektur an der bestehenden Phase-7f-Implementierung.
+
+### Ergebnis: Phase 7g umgesetzt (2026-07-10)
+
+Beide Korrekturen ausschließlich in `src/game/scenes/GreedRunScene.ts`
+(`renderGrid`/`renderLegend`) — `GridRunEngine.ts`, `AttendantEngine.ts`
+und deren Tests bewusst NICHT angefasst (Kern-Logik unverändert, reine
+Darstellungs-Korrektur), wie gefordert.
+
+**Fix 1 (Sichtweite fix am Startsektor):** `renderGrid` berechnet
+`visibleKeys` jetzt über die freie Funktion `getVisibleSectors(
+getStartPosition(gridSize), sightRange, gridSize)` (beide neu aus
+`GridRunEngine.ts` importiert) statt über `this.runEngine.getVisibleSectors
+(sightRange)` (die intern die AKTUELLE Position nutzt). Die
+`GridRunEngine`-Instanzmethode `getVisibleSectors` selbst bleibt
+unverändert im Engine-Code stehen (samt ihrem bestehenden Test, der
+explizit ihr "um die aktuelle Position"-Verhalten prüft) — sie wird von der
+Szene schlicht nicht mehr aufgerufen, aber als legitimer Teil der
+Engine-API nicht entfernt, um den Test nicht anfassen zu müssen.
+
+**Fix 2 (mögliche statt ausgeschlossene Kategorien):** im
+"sichtbar, aber nicht vollständig bekannt"-Zweig wird jetzt
+`SECTOR_CATEGORIES.filter(c => !knowledge.excluded.includes(c))`
+berechnet und pro verbleibender Kategorie ein kleines Ecken-Symbol
+gezeichnet (`addPossibleCategoryTick`, neue private Methode) — Farbe
+(`getSectorColor`) UND Buchstabe (`SECTOR_SYMBOLS`) gekoppelt, `'empty'`
+zeigt wie in der Legende nur die Farbfläche ohne Buchstabe. Bei
+`knowledge.excluded.length === 0` (Präzision 0) weiterhin nur das neutrale
+"?" ohne Symbole. `renderLegend` um eine erklärende Zeile ergänzt ("Kleine
+Symbole in Zelle = dort noch mögliche Kategorien") — bewusst mit schmalem
+`wordWrap` (155px), damit sie links vom Fokus-HUD-Chip bleibt statt ihn zu
+überlappen (beim ersten Verifikations-Durchlauf per Screenshot als
+Layout-Kollision aufgefallen und direkt korrigiert).
+
+**Verifiziert:** `npm test` (**273/273 grün, unverändert** — wie gefordert
+keine Test-Deltas, da nur Scene-Darstellung betroffen), `npm run lint`
+sauber, `npx tsc --noEmit` sauber. Zusätzlich per Playwright-Skript gegen
+`npm run dev-nolog` (Skript + temporäre Playwright-Installation danach
+wieder entfernt, nicht Teil des Repos) mit Screenshots visuell geprüft:
+frischer Run mit Fokus "Sicher" zeigt die 4 Start-Nachbarn korrekt (1
+davon voll aufgedeckt als Geist, die übrigen 3 mit je 2 Ecken-Symbolen
+"P"/"B" = Punkte oder Bonus noch möglich, Geist bereits ausgeschlossen);
+nach zwei ausgeführten "Rechts"-Zügen bleibt der sichtbare Bereich
+sichtbar UNVERÄNDERT um die ursprüngliche Mitte (nicht um die neue
+Position) — Fix 1 bestätigt. Keine Konsolenfehler. **Noch nicht vom
+Nutzer selbst erneut gespielt/bestätigt.**
 
 ## NEUE PHASE 7f: Greed Run Genre-Rework (2026-07-10, mit Nutzer abgestimmt, Experiment)
 

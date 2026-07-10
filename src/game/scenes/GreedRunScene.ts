@@ -2,8 +2,11 @@ import { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
 import {
     GridRunEngine,
+    SECTOR_CATEGORIES,
     applyDirection,
     drawCategoryPayout,
+    getStartPosition,
+    getVisibleSectors,
     resolveSectorKnowledge,
     type Direction,
     type GridPosition,
@@ -244,6 +247,16 @@ export class GreedRunScene extends Scene {
 
         this.add.circle(x, y, 4, 0x555555);
         this.add.text(x + 16, y, 'Bereits besucht', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
+        y += rowGap;
+
+        // Phase 7g: erklaert explizit die Ecken-Symbol-Konvention aus
+        // renderGrid/addPossibleCategoryTick, da "moegliche" vs.
+        // "ausgeschlossene" Kategorie sonst nicht selbsterklaerend ist.
+        // wordWrap bewusst schmal (bleibt links vom Fokus-Chip bei x=600,
+        // siehe renderFocusChip) statt darunter zu geraten.
+        this.add.text(x, y, 'Kleine Symbole in Zelle = dort noch moegliche Kategorien.', {
+            fontFamily: 'Arial', fontSize: 11, color: '#999999', wordWrap: { width: 155 },
+        });
     }
 
     // --- Feld-Darstellung ---------------------------------------------------
@@ -262,12 +275,17 @@ export class GreedRunScene extends Scene {
     }
 
     // Zeichnet die 5x5-Sektoren gemaess Sichtweite/Praezision (game-spec.md
-    // 4.2). Drei Zustaende pro Sektor, IMMER Farbe+Symbol gekoppelt (CLAUDE.md
-    // Barrierefreiheits-Grundsatz):
+    // 4.2, Phase 7g Korrekturen nach dem ersten Playtest). Drei Zustaende pro
+    // Sektor, IMMER Farbe+Symbol gekoppelt (CLAUDE.md Barrierefreiheits-
+    // Grundsatz):
     //   - ausserhalb der Sichtweite (und nie besucht): grauer "?"-Sektor.
     //   - sichtbar, aber Praezision reicht nicht fuer vollstaendige Kenntnis:
-    //     neutraler Sektor mit "?" PLUS kleinen farbigen Ecken-Punkten fuer
-    //     jede bereits ausgeschlossene Kategorie.
+    //     neutraler Sektor mit "?" PLUS kleinen farbigen Ecken-Symbolen fuer
+    //     jede noch MOEGLICHE Kategorie (Phase 7g: vorher wurden die bereits
+    //     AUSGESCHLOSSENEN Kategorien gezeigt, das war fuer den Spieler nicht
+    //     eindeutig zu lesen). Bei Praezision 0 (noch nichts ausgeschlossen)
+    //     bewusst keine Symbole, nur das neutrale "?" (sonst kein
+    //     Informationsgewinn, nur Unordnung).
     //   - sichtbar UND (per Praezision oder Ausschluss) bekannt: voll
     //     eingefaerbter Sektor mit dem Kategorie-Buchstaben.
     // Bereits besuchte Sektoren zeigen unabhaengig davon nur noch eine dezente
@@ -278,9 +296,15 @@ export class GreedRunScene extends Scene {
         const owned = this.getOwnedUpgradeIds();
         const sightRange = getSightRange(this.config, owned);
         const precision = getGridPrecisionLevel(this.config, owned);
-        const visibleKeys = new Set(this.runEngine.getVisibleSectors(sightRange).map(cellKey));
-        const currentPos = this.runEngine.getPosition();
         const gridSize = this.config.grid.gridSize;
+        // Phase 7g Korrektur (game-spec.md 4.2, "Korrektur nach Playtest
+        // 2026-07-10"): der sichtbare Bereich ist FEST um den Startsektor
+        // verankert, nicht mehr um die aktuelle Position -- vorher wanderte
+        // er bei jedem Zug mit, das war im Spiel verwirrend. Wer den
+        // sichtbaren Bereich verlaesst, laeuft komplett blind weiter
+        // (gewollt, kein zusaetzlicher Constraint noetig).
+        const visibleKeys = new Set(getVisibleSectors(getStartPosition(gridSize), sightRange, gridSize).map(cellKey));
+        const currentPos = this.runEngine.getPosition();
 
         for (let row = 0; row < gridSize; row += 1) {
             for (let col = 0; col < gridSize; col += 1) {
@@ -305,12 +329,10 @@ export class GreedRunScene extends Scene {
                     } else {
                         this.drawCellBase(x, y, 0x2a2a2a);
                         this.addCellLabel(x, y, '?', '#ffffff');
-                        knowledge.excluded.forEach((category, i) => {
-                            const tickX = x - CELL_SIZE / 2 + 8 + i * 11;
-                            const tickY = y - CELL_SIZE / 2 + 8;
-                            const tick = this.add.circle(tickX, tickY, 4, getSectorColor(category));
-                            this.dynamicObjects.push(tick);
-                        });
+                        if (knowledge.excluded.length > 0) {
+                            const possible = SECTOR_CATEGORIES.filter((category) => !knowledge.excluded.includes(category));
+                            possible.forEach((category, i) => this.addPossibleCategoryTick(x, y, category, i));
+                        }
                     }
                 }
 
@@ -319,6 +341,24 @@ export class GreedRunScene extends Scene {
                     this.dynamicObjects.push(marker);
                 }
             }
+        }
+    }
+
+    // Kleines Ecken-Symbol fuer EINE noch moegliche Kategorie eines noch
+    // nicht vollstaendig bekannten Sektors (Phase 7g, siehe renderGrid) --
+    // Farbe UND Buchstabe gekoppelt (CLAUDE.md-Barrierefreiheits-Grundsatz),
+    // 'empty' hat wie in der Legende keinen Buchstaben, nur die Farbflaeche.
+    private addPossibleCategoryTick(cellX: number, cellY: number, category: SectorCategory, index: number): void {
+        const tickX = cellX - CELL_SIZE / 2 + 10 + index * 13;
+        const tickY = cellY - CELL_SIZE / 2 + 10;
+        const dot = this.add.circle(tickX, tickY, 6, getSectorColor(category));
+        this.dynamicObjects.push(dot);
+        const symbol = SECTOR_SYMBOLS[category];
+        if (symbol) {
+            const label = this.add
+                .text(tickX, tickY, symbol, { fontFamily: 'Arial Black', fontSize: 8, color: '#000000' })
+                .setOrigin(0.5);
+            this.dynamicObjects.push(label);
         }
     }
 
