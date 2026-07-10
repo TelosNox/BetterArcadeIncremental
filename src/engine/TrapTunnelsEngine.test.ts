@@ -346,7 +346,7 @@ describe('TrapTunnelsEngine (Phase 7j, game-spec.md 4.3 v2: Zufallsbewegung + Dy
     });
 
     describe('TrapTunnelsEngine', () => {
-        it('generiert bei Konstruktion ein festes Netz, aber NOCH KEINE Gegner-Pfade (live erst bei resolve())', () => {
+        it('generiert bei Konstruktion ein festes Netz UND feste Start-Kreuzungen, aber NOCH KEINE Gegner-Pfade (live erst bei resolve())', () => {
             const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 0, 2, Math.random);
             expect(engine.getNetwork().junctionCount).toBe(16);
             expect(engine.getLastEnemyPaths()).toEqual([]);
@@ -358,6 +358,55 @@ describe('TrapTunnelsEngine (Phase 7j, game-spec.md 4.3 v2: Zufallsbewegung + Dy
 
         it('wirft bei nicht-positivem enemyCount', () => {
             expect(() => new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 0, 0, Math.random)).toThrow(RangeError);
+        });
+
+        describe('getEnemyStartJunctions (Phase 7k: Start-Kreuzungen waehrend Planung bekannt/sichtbar)', () => {
+            it('liefert sofort nach Konstruktion enemyCount-viele gueltige Kreuzungs-Indizes, vor jedem resolve()-Aufruf', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 0, 3, Math.random);
+                const starts = engine.getEnemyStartJunctions();
+                expect(starts).toHaveLength(3);
+                expect(starts.every((s) => s >= 0 && s < engine.getNetwork().junctionCount)).toBe(true);
+                // Vor resolve() gibt es noch keine Pfade -- die Start-Kreuzungen sind trotzdem schon da.
+                expect(engine.getLastEnemyPaths()).toEqual([]);
+            });
+
+            it('liefert bei wiederholten Aufrufen stabil dieselben Werte (keine Neu-Ziehung)', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 0, 3, Math.random);
+                const first = engine.getEnemyStartJunctions();
+                const second = engine.getEnemyStartJunctions();
+                expect(second).toEqual(first);
+            });
+
+            it('bleibt nach resolve() unveraendert', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 0, 2, Math.random);
+                const beforeResolve = engine.getEnemyStartJunctions();
+                engine.resolve();
+                expect(engine.getEnemyStartJunctions()).toEqual(beforeResolve);
+            });
+
+            it('die von resolve() gelieferten Pfade beginnen jeweils an der entsprechenden Start-Kreuzung', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 0, 3, Math.random);
+                const starts = engine.getEnemyStartJunctions();
+                engine.resolve();
+                const paths = engine.getLastEnemyPaths();
+                expect(paths.map((p) => p[0])).toEqual(starts);
+            });
+
+            it('Dynamit-Sprengung vor resolve() aendert die Start-Kreuzungen nicht, auch wenn eine gesprengte Kante an einer Start-Kreuzung haengt', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 5, 2, Math.random);
+                const startsBefore = engine.getEnemyStartJunctions();
+                const firstStart = startsBefore[0];
+                const adjacentEdge = engine.getNetwork().edges.find(([a, b]) => a === firstStart || b === firstStart);
+                expect(adjacentEdge).toBeDefined();
+                const [a, b] = adjacentEdge!;
+                expect(engine.blastEdge(a, b)).toBe(true);
+                expect(engine.getEnemyStartJunctions()).toEqual(startsBefore);
+                engine.resolve();
+                expect(engine.getEnemyStartJunctions()).toEqual(startsBefore);
+                // Der Pfad startet weiterhin an derselben Kreuzung, auch wenn eine
+                // ihrer Kanten gesprengt wurde (nur ihre Optionen aendern sich).
+                expect(engine.getLastEnemyPaths()[0][0]).toBe(firstStart);
+            });
         });
 
         it('placeTrap platziert bis zu maxTraps Fallen, danach nicht mehr', () => {

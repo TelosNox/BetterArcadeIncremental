@@ -4,8 +4,87 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7j (Trap Tunnels Kernmodell-Ersatz: Zufallsbewegung + Dynamit, ersetzt die 7i-Fassung mit festen Gegner-Pfaden + Vorschau-Reichweite VOR deren erstem Playtest vollständig) — implementiert, alle automatisierten Checks grün, zusätzlich per Playwright-Skript visuell verifiziert, aber noch nicht vom Nutzer gespielt.
-**Läuft/als Nächstes:** Nutzer-Playtest für 7j abwarten. Danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7k (Trap Tunnels Fix: Gegner-Start-Kreuzungen während Planung sichtbar) — implementiert, alle automatisierten Checks grün, zusätzlich per Playwright-Skript visuell verifiziert, aber noch nicht vom Nutzer gespielt.
+**Läuft/als Nächstes:** Nutzer-Playtest für 7j/7k gemeinsam abwarten (7k war ein Fix vor dem ersten Playtest von 7j, beide zusammen noch nicht vom Nutzer selbst gespielt). Danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7k: Trap Tunnels Fix — Gegner-Start-Kreuzungen während Planung sichtbar (2026-07-10, Nutzer-Feedback vor dem ersten Playtest von 7j)
+
+**Problem (Nutzer-Feedback):** Phase 7j hat die Vorschau-Reichweiten-Achse zu Recht entfernt, aber dabei einen wichtigen Unterschied übersehen: "keine Vorschau auf den weiteren Weg" ist etwas anderes als "keine Kenntnis der Start-Position". In der aktuellen Implementierung (`TrapTunnelsEngine.resolve()`) werden die Gegner-Start-Kreuzungen erst BEI "Los" per `pickEnemyStartJunctions` gezogen — `getLastEnemyPaths()` liefert während der gesamten Planungsphase ein leeres Array. Die Szene (`TrapTunnelsScene.renderEnemyMarkers`) zeigt entsprechend während der Planung KEINE Gegner an. Der Spieler platziert Fallen/Dynamit also komplett blind, ohne jeden Bezugspunkt — das macht die Planungsphase sinnlos (reines Raten statt eine Entscheidung auf Basis von Netz-Topologie + bekanntem Startpunkt).
+
+**Korrektur (verbindlich, siehe `docs/game-spec.md` 4.3, neuer Absatz "Start-Kreuzungen müssen während der Planung bekannt/sichtbar sein"):** Die Start-Kreuzung jedes Gegners wird EINMALIG zusammen mit dem Netz gezogen (im Konstruktor von `TrapTunnelsEngine`, nicht mehr in `resolve()`) und ist während der gesamten Planungsphase sichtbar (Farbe + Buchstabe je Gegner, wie am übrigen Netz). Nur der WEITERE Weg ab dieser bekannten Start-Kreuzung bleibt echte, erst bei "Los" live gewürfelte Zufallsbewegung — das Kernmodell aus 7j (Zufallsbewegung + Dynamit) bleibt sonst vollständig unverändert.
+
+**Technische Konsequenz:**
+
+1. `src/engine/TrapTunnelsEngine.ts`: `pickEnemyStartJunctions(...)`-Aufruf aus `resolve()` in den Konstruktor verschieben, Ergebnis in einem neuen `private readonly enemyStarts`-Feld halten. Neue öffentliche Methode `getEnemyStartJunctions(): readonly number[]`. `resolve()` nutzt `this.enemyStarts` statt neu zu ziehen — WICHTIG: die Start-Kreuzungen dürfen sich durch das Sprengen von Verbindungen (Dynamit) NICHT verschieben, auch wenn eine gesprengte Kante zufällig an einer Start-Kreuzung hängt (die Kreuzung selbst bleibt Startpunkt, nur ihre Verbindungen ändern sich) — bei der Bewegungsauflösung in `resolve()` wird wie bisher auf dem UM die gesprengten Kanten reduzierten Netz gewürfelt, nur die Wahl DER Start-Kreuzungen selbst ist jetzt vorab fix.
+2. `computeBlindTrapExpectedValue` (Blind-EV-Simulation) entsprechend anpassen, falls sie `pickEnemyStartJunctions` weiterhin pro Trial frisch aufruft (das bleibt für die Simulation korrekt so, betrifft nur die `TrapTunnelsEngine`-Instanzmethode `resolve()`).
+3. `src/game/scenes/TrapTunnelsScene.ts`: `renderEnemyMarkers()` (bzw. eine neue Variante davon) muss während `phase === 'planning'` die Start-Kreuzungen aus `engine.getEnemyStartJunctions()` anzeigen (ein Marker pro Gegner an seiner festen Start-Position, Farbe + Buchstabe, KEIN Schritt-Text mehr nötig, da es ja nur eine einzige bekannte Position ist, kein Pfad). Während `phase === 'executing'` weiterhin die animierte Schritt-für-Schritt-Bewegung aus `engine.getLastEnemyPaths()` wie bisher zeigen.
+4. Tests entsprechend anpassen/ergänzen: `TrapTunnelsEngine.test.ts` prüft, dass `getEnemyStartJunctions()` sofort nach Konstruktion (vor jedem `resolve()`-Aufruf) gefüllte, gültige Kreuzungs-Indizes liefert, dass wiederholte `resolve()`-Aufrufe (falls die Engine das erlaubt) dieselben Start-Kreuzungen behalten, und dass Dynamit-Sprengungen die Start-Kreuzungen selbst nicht verändern.
+
+**Bewusst NICHT Teil dieser Korrektur:** keine Änderung an Fallenanzahl/Dynamitanzahl/Gegneranzahl-Upgrades, keine Rückkehr der Mindestabstandsregel, keine sonstige Balance-Änderung — reiner Sichtbarkeits-/Informationsfix.
+
+### Ergebnis: Phase 7k umgesetzt (2026-07-10)
+
+Reihenfolge wie in CLAUDE.md gefordert: Engine-Logik zuerst mit Vitest
+abgesichert, danach an die Szene angebunden. Keine Speicherstand-relevante
+Feldänderung nötig (`CURRENT_SAVE_VERSION` bleibt bei 6) — die Start-
+Kreuzungen sind reine Laufzeit-/Anzeige-Information, kein persistierter
+Zustand.
+
+**`src/engine/TrapTunnelsEngine.ts`+Test (+5 Tests, 54 statt 49):** Der
+`pickEnemyStartJunctions(...)`-Aufruf wandert aus `resolve()` in den
+Konstruktor — Ergebnis landet in einem neuen `private readonly enemyStarts`-
+Feld, gezogen auf dem VOLLEN, noch nicht durch Dynamit reduzierten Netz
+(Dynamit kommt strukturell erst nach der Planung zum Einsatz). Neue
+öffentliche Methode `getEnemyStartJunctions()` gibt `this.enemyStarts`
+zurück — stabil über beliebig viele Aufrufe und unverändert durch
+Fallen-/Dynamit-Planung sowie `resolve()`. `resolve()` nutzt jetzt
+`this.enemyStarts` statt erneut zu ziehen; die Bewegungsauflösung selbst
+(`resolveEnemyMovement`) läuft weiterhin auf dem um die gesprengten Kanten
+reduzierten Netz — eine gesprengte Kante direkt an einer Start-Kreuzung
+ändert dadurch nur deren Optionen beim ersten Schritt, nicht die Kreuzung
+selbst als Startpunkt (per Test verifiziert: Kante an `enemyStarts[0]`
+gesprengt, `getEnemyStartJunctions()` bleibt vor UND nach `resolve()`
+identisch, `getLastEnemyPaths()[0][0]` bleibt trotzdem `enemyStarts[0]`).
+`computeBlindTrapExpectedValue` (freie Simulationsfunktion) bewusst
+unverändert gelassen — sie zieht weiterhin pro Trial frisch eigene
+Start-Kreuzungen über die freie `pickEnemyStartJunctions`-Funktion, das ist
+für die Blind-EV-Simulation korrekt so und betrifft nicht die
+`TrapTunnelsEngine`-Instanzmethode `resolve()`. Neue Tests: Start-Kreuzungen
+sofort nach Konstruktion gültig und vollständig (vor jedem `resolve()`),
+stabil bei wiederholten Aufrufen, unverändert nach `resolve()`, Pfade aus
+`getLastEnemyPaths()` beginnen jeweils exakt an der zugehörigen
+`enemyStarts[i]`-Kreuzung, Dynamit-Sprengung an einer Start-Kreuzung
+verändert die Start-Kreuzungen selbst nicht.
+
+**`src/game/scenes/TrapTunnelsScene.ts`:** `renderEnemyMarkers()` in zwei
+kleine private Methoden aufgespalten (Ermessen Claude Code für Klarheit
+genutzt, wie im Prompt vorgeschlagen): `renderPlanningEnemyMarkers()` zeigt
+während `phase === 'planning'` EINEN Marker pro Gegner an
+`engine.getEnemyStartJunctions()` (Farbe + Buchstabe, kein Schritt-Text
+nötig, da nur eine bekannte Position statt eines Pfads), unverändert
+`renderExecutingEnemyMarkers()` (vormals der komplette Inhalt von
+`renderEnemyMarkers()`) für die animierte Schritt-für-Schritt-Darstellung
+während `phase === 'executing'` aus `engine.getLastEnemyPaths()`.
+`renderEnemyMarkers()` selbst ist jetzt nur noch ein dünner Dispatcher nach
+`this.phase`. Legendentext pro Gegner-Label korrigiert ("Start-Kreuzung
+bereits während der Planung sichtbar" statt der jetzt falschen Aussage
+"sichtbar erst während der Ausführung").
+
+**Verifiziert:** `npm test` (**346/346 grün**, vorher 341 nach Phase 7j —
+Zuwachs durch die 5 neuen `getEnemyStartJunctions`-Tests), `npm run lint`
+sauber, `npx tsc --noEmit` sauber, `npm run build-nolog` erfolgreich.
+Zusätzlich per Playwright-Skript gegen `npm run dev-nolog` (Skript +
+temporäre Playwright-Installation danach wieder entfernt, nicht Teil des
+Repos/package.json) mit Screenshots visuell geprüft: direkt nach dem Laden
+eines neuen Runs, VOR jeder Fallen-Platzierung, sind alle 3 Gegner-
+Start-Positionen (A/B/C, Farbe+Buchstabe) sofort am Netz sichtbar; eine
+Falle direkt auf einer bekannten Start-Kreuzung platziert löste beim
+ersten Ausführungsschritt ("Schritt 1") korrekt sofort einen Einzelfang aus
+(bestätigt, dass die Animation exakt an der zuvor angezeigten Position
+beginnt); nach Laufende startete automatisch ein neues Netz mit neuen,
+sofort wieder sichtbaren Start-Positionen. Keine Konsolenfehler über den
+gesamten Testlauf. **Noch nicht vom Nutzer selbst gespielt/bestätigt** — das
+ist der nächste Schritt, kein automatisierter Ersatz dafür.
 
 ## NEUE PHASE 7j: Trap Tunnels Kernmodell-Ersatz — Zufallsbewegung + Dynamit (2026-07-10, mit Nutzer abgestimmt, ersetzt 7i VOR dem ersten Playtest)
 

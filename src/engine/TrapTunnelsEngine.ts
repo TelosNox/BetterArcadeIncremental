@@ -309,14 +309,19 @@ export function computeBlindTrapExpectedValue(
 // ueber die Planungsphase hinweg mutierenden Zustand: Fallen-Platzierung UND
 // seit Phase 7j auch Dynamit-Planung). Das Netz ist ab Konstruktion fest
 // (game-spec.md 4.3 "pro Run einmalig fest vorab generiert, bevor Dynamit
-// zum Einsatz kommt") -- die Gegnerbewegung dagegen wird ERST bei `resolve()`
-// live gewuerfelt, NICHT mehr im Konstruktor (Kernaenderung aus Phase 7j).
+// zum Einsatz kommt"). Die Gegner-START-Kreuzungen sind seit Phase 7k
+// EBENFALLS ab Konstruktion fest und waehrend der gesamten Planungsphase
+// bekannt (game-spec.md 4.3 "Start-Kreuzungen muessen waehrend der Planung
+// bekannt/sichtbar sein") -- nur der WEITERE Weg ab dort wird weiterhin ERST
+// bei `resolve()` live gewuerfelt (Kernaenderung aus Phase 7j bleibt sonst
+// unveraendert).
 export class TrapTunnelsEngine {
     private readonly network: TunnelNetwork;
     private readonly config: TrapTunnelsRunConfig;
     private readonly maxTraps: number;
     private readonly maxDynamite: number;
     private readonly enemyCount: number;
+    private readonly enemyStarts: readonly number[];
     private readonly rng: () => number;
     private readonly placedTraps = new Set<number>();
     private readonly blastedEdges = new Set<string>();
@@ -341,6 +346,10 @@ export class TrapTunnelsEngine {
         this.maxDynamite = maxDynamite;
         this.enemyCount = enemyCount;
         this.rng = rng;
+        // Auf dem VOLLEN, noch nicht durch Dynamit reduzierten Netz gezogen --
+        // Dynamit kommt strukturell erst NACH der Planung zum Einsatz (game-
+        // spec.md 4.3 "Netz-Generierung ... bevor Dynamit zum Einsatz kommt").
+        this.enemyStarts = pickEnemyStartJunctions(this.network, enemyCount, rng);
     }
 
     getNetwork(): TunnelNetwork {
@@ -349,6 +358,13 @@ export class TrapTunnelsEngine {
 
     getEnemyCount(): number {
         return this.enemyCount;
+    }
+
+    // Fest ab Konstruktion, waehrend der GESAMTEN Planungsphase bekannt/
+    // sichtbar (Phase 7k, game-spec.md 4.3) -- aendert sich weder durch
+    // Fallen-/Dynamit-Planung noch durch `resolve()`.
+    getEnemyStartJunctions(): readonly number[] {
+        return this.enemyStarts;
     }
 
     getMaxTraps(): number {
@@ -419,10 +435,15 @@ export class TrapTunnelsEngine {
     // Aufrufer ruft das genau EINMAL bei "Los" auf (die Fallen-/Dynamit-
     // Platzierung steht zu diesem Zeitpunkt fest) und liest Pfade/Ereignisse
     // danach nur noch ab, um die Animation deterministisch abzuspielen.
+    // Seit Phase 7k werden die Start-Kreuzungen NICHT mehr neu gezogen (siehe
+    // `this.enemyStarts`, fest ab Konstruktion) -- nur die Bewegungsauflösung
+    // ab dort laeuft weiterhin auf dem UM die gesprengten Kanten reduzierten
+    // Netz. Eine gesprengte Kante direkt an einer Start-Kreuzung veraendert
+    // dadurch nur deren Optionen beim ersten Schritt, nicht die Kreuzung
+    // selbst als Startpunkt.
     resolve(): TrapEvent[] {
         const reducedNetwork = removeEdges(this.network, this.blastedEdges);
-        const starts = pickEnemyStartJunctions(reducedNetwork, this.enemyCount, this.rng);
-        this.lastEnemyPaths = resolveEnemyMovement(reducedNetwork, starts, this.config.pathLength, this.rng);
+        this.lastEnemyPaths = resolveEnemyMovement(reducedNetwork, this.enemyStarts, this.config.pathLength, this.rng);
         return resolveTraps(this.lastEnemyPaths, this.placedTraps);
     }
 }

@@ -44,8 +44,12 @@ import { createMilestonePips, updateMilestonePips } from './milestonePips';
 //
 // Phase 7j entfernt die Vorschau-Reichweiten-Achse vollstaendig (game-spec.md
 // 4.3 "Keine Vorschau-Mechanik" -- die Netz-Topologie ist immer vollstaendig
-// sichtbar, es gibt aber vor der Ausfuehrung schlicht noch keine Gegner-
-// Bewegung zum Anzeigen, da sie erst live bei resolve() gewuerfelt wird).
+// sichtbar). Phase 7k korrigiert dabei einen Sichtbarkeits-Fehler: "keine
+// Vorschau auf den weiteren Weg" ist etwas anderes als "keine Kenntnis der
+// Start-Position" -- die feste Start-Kreuzung jedes Gegners ist seit Phase 7k
+// bereits waehrend der Planungsphase sichtbar (game-spec.md 4.3 "Start-
+// Kreuzungen muessen waehrend der Planung bekannt/sichtbar sein"), nur der
+// WEITERE Weg ab dort wird weiterhin erst bei "Los" live gewuerfelt.
 
 type Phase = 'planning' | 'executing';
 
@@ -222,7 +226,7 @@ export class TrapTunnelsScene extends Scene {
             this.add.circle(x + 10, y, 8, getEnemyColor(i)).setStrokeStyle(1, 0x000000);
             this.add.text(x + 10, y, label, { fontFamily: 'Arial Black', fontSize: 8, color: '#000000' }).setOrigin(0.5);
             this.add
-                .text(x + 26, y, `Gegner ${label} (sichtbar erst waehrend der Ausfuehrung)`, { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' })
+                .text(x + 26, y, `Gegner ${label} (Start-Kreuzung bereits waehrend der Planung sichtbar)`, { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' })
                 .setOrigin(0, 0.5);
             y += 26;
         }
@@ -331,13 +335,29 @@ export class TrapTunnelsScene extends Scene {
         this.dynamicObjects.push(circle, text);
     }
 
-    // Nur waehrend der Ausfuehrungsphase gibt es ueberhaupt eine Gegner-
-    // Position zu zeigen -- die Bewegung wird erst bei "Los" live gewuerfelt
-    // (game-spec.md 4.3 Kernaenderung, Phase 7j), es gibt daher keine
-    // Planungsphasen-Vorschau mehr (die bisherige getVisiblePathPositions-
-    // Darstellung aus Phase 7i entfaellt vollstaendig).
-    private renderEnemyMarkers(): void {
-        if (!this.engine || this.phase !== 'executing') return;
+    // Waehrend der Planungsphase ist nur die feste START-Kreuzung jedes
+    // Gegners bekannt (game-spec.md 4.3 "Start-Kreuzungen muessen waehrend
+    // der Planung bekannt/sichtbar sein", Phase-7k-Fix) -- EIN Marker pro
+    // Gegner, kein Schritt-Text noetig, da es nur die eine bekannte Position
+    // gibt, keinen Pfad.
+    private renderPlanningEnemyMarkers(): void {
+        if (!this.engine) return;
+        this.engine.getEnemyStartJunctions().forEach((junction, enemyIndex) => {
+            const color = getEnemyColor(enemyIndex);
+            const label = getEnemyLabel(enemyIndex);
+            const offset = ENEMY_MARKER_OFFSETS[enemyIndex % ENEMY_MARKER_OFFSETS.length];
+            const { x, y } = this.junctionCenter(junction);
+            this.drawEnemyMarker(x + offset.x, y + offset.y, color, label);
+        });
+    }
+
+    // Waehrend der Ausfuehrungsphase zeigt jeder Marker die AKTUELLE Position
+    // im laufenden Schritt, gelesen aus den bei "Los" live gewuerfelten
+    // Pfaden (game-spec.md 4.3 Kernaenderung, Phase 7j) -- der weitere Weg AB
+    // der in der Planungsphase bekannten Start-Kreuzung bleibt echte
+    // Zufallsbewegung.
+    private renderExecutingEnemyMarkers(): void {
+        if (!this.engine) return;
         const paths = this.engine.getLastEnemyPaths();
 
         paths.forEach((path, enemyIndex) => {
@@ -348,6 +368,14 @@ export class TrapTunnelsScene extends Scene {
             const { x, y } = this.junctionCenter(path[stepIndex]);
             this.drawEnemyMarker(x + offset.x, y + offset.y, color, label);
         });
+    }
+
+    private renderEnemyMarkers(): void {
+        if (this.phase === 'planning') {
+            this.renderPlanningEnemyMarkers();
+        } else {
+            this.renderExecutingEnemyMarkers();
+        }
     }
 
     // --- Run-Steuerung + automaten-interne Upgrade-Achsen -------------------
