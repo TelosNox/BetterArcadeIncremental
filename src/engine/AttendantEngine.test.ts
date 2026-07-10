@@ -19,9 +19,12 @@ import {
     getGridAttendantExpectedValuePerMove,
     getGridAttendantMachinePointsRate,
     getGridPerfectInfoExpectedValue,
+    getTrapTunnelsAttendantExpectedValuePerTrap,
+    getTrapTunnelsAttendantMachinePointsRate,
+    getTrapTunnelsBlindExpectedValuePerTrap,
     type AttendantRate,
 } from './AttendantEngine';
-import type { CyclicActionDef, GridSectorConfig } from './types';
+import type { CyclicActionDef, GridSectorConfig, TrapTunnelsRunConfig } from './types';
 
 // Handgebaute Fixture statt Import aus src/data/machines.config.ts -- die
 // Engine-Tests bleiben damit unabhaengig von der konkreten Automaten-
@@ -366,6 +369,68 @@ describe('AttendantEngine', () => {
                 categoryCounts: { ghost: 24, points: 0, empty: 0, bonus: 0 },
             };
             expect(getGridAttendantMachinePointsRate(allGhost, 1, 3, 3)).toBeGreaterThanOrEqual(0);
+        });
+    });
+
+    // Eigenstaendige Trap-Tunnels-Fixture (Phase 7i, game-spec.md 4.3) --
+    // dieselbe Unabhaengigkeit von machines.config.ts wie oben.
+    const trapTunnelsConfig: TrapTunnelsRunConfig = {
+        gridSize: 4,
+        extraEdgeRange: [3, 4],
+        pathLength: 6,
+        enemyCount: 2,
+        minStartDistance: 3,
+        singleCatchPayoutRange: [7, 12],
+        chainCatchPayoutRange: [24, 34],
+    };
+
+    describe('getTrapTunnelsBlindExpectedValuePerTrap (Phase 7i, dokumentierte Vereinfachung)', () => {
+        it('ist positiv (Blind-EV-Garantie gilt auch fuer die geschlossene Naeherung, nicht nur die Simulation)', () => {
+            expect(getTrapTunnelsBlindExpectedValuePerTrap(trapTunnelsConfig)).toBeGreaterThan(0);
+        });
+
+        it('ist 0, wenn kein zweiter Gegner existiert UND die Payout-Spannen 0 sind (Gegenprobe)', () => {
+            const zeroConfig: TrapTunnelsRunConfig = {
+                ...trapTunnelsConfig,
+                singleCatchPayoutRange: [0, 0],
+                chainCatchPayoutRange: [0, 0],
+            };
+            expect(getTrapTunnelsBlindExpectedValuePerTrap(zeroConfig)).toBe(0);
+        });
+    });
+
+    describe('getTrapTunnelsAttendantExpectedValuePerTrap', () => {
+        it('entspricht bei Vorschau-Reichweite 0 der Blind-EV', () => {
+            const ev = getTrapTunnelsAttendantExpectedValuePerTrap(trapTunnelsConfig, 0, 6);
+            expect(ev).toBeCloseTo(getTrapTunnelsBlindExpectedValuePerTrap(trapTunnelsConfig));
+        });
+
+        it('naehert sich bei maximaler Vorschau-Reichweite dem garantierten Einzelfang-Mittelwert an', () => {
+            const ev = getTrapTunnelsAttendantExpectedValuePerTrap(trapTunnelsConfig, 6, 6);
+            const expectedSingleMean = (trapTunnelsConfig.singleCatchPayoutRange[0] + trapTunnelsConfig.singleCatchPayoutRange[1]) / 2;
+            expect(ev).toBeCloseTo(expectedSingleMean);
+        });
+    });
+
+    describe('getTrapTunnelsAttendantMachinePointsRate', () => {
+        it('ist 0 bei Musterkenntnis 0 (Effizienz 0)', () => {
+            expect(getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 0, 3, 6, 6)).toBe(0);
+        });
+
+        it('steigt mit der Musterkenntnis (mehr Effizienz UND mehr nutzbare Vorschau-Reichweite)', () => {
+            const low = getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 0.2, 3, 6, 6);
+            const high = getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 0.9, 3, 6, 6);
+            expect(high).toBeGreaterThan(low);
+        });
+
+        it('steigt mit der Fallenanzahl (linear, keine Pfad-Interaktion in der Naeherung)', () => {
+            const oneTrap = getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 1, 1, 6, 6);
+            const threeTraps = getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 1, 3, 6, 6);
+            expect(threeTraps).toBeCloseTo(oneTrap * 3);
+        });
+
+        it('ist niemals negativ', () => {
+            expect(getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 1, 3, 6, 6)).toBeGreaterThanOrEqual(0);
         });
     });
 });

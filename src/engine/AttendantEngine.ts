@@ -1,4 +1,4 @@
-import type { AttendantPoolState, CyclicActionDef, GridSectorConfig, PatternConfig, SectorCategory } from './types';
+import type { AttendantPoolState, CyclicActionDef, GridSectorConfig, PatternConfig, SectorCategory, TrapTunnelsRunConfig } from './types';
 import { computeBlindExpectedValue } from './GridRunEngine';
 
 // Attendant-Automatisierung (game-spec.md 3.2, Baukasten 1.3/1.9). Framework-
@@ -256,6 +256,100 @@ export function getGridAttendantMachinePointsRate(
     const evPerMove = getGridAttendantExpectedValuePerMove(config, precision, maxPrecision);
     const efficiency = getAttendantEfficiency(knowledge);
     return Math.max(0, evPerMove) * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
+}
+
+// --- Trap-Tunnels-Automaten-Ertragsrate (Phase 7i, game-spec.md 4.3, --------
+// STATUS.md Phase 7i Punkt 5) -----------------------------------------------
+//
+// Wie beim Grid-Automaten oben passt weder das zyklische Markov-Modell noch
+// die kategorien-basierte Naeherung -- Trap Tunnels hat weder Pattern-
+// Zustaende noch Sektor-Kategorien, sondern ein zufaellig generiertes
+// Tunnelnetz mit festen Gegner-Pfaden (siehe TrapTunnelsEngine.ts).
+// Game-spec.md 4.3 "Attendant-Automatisierung" erlaubt ausdruecklich eine
+// GROB VEREINFACHTE Platzhalter-Schaetzung OHNE echte Pfad-Optimierung.
+//
+// Bewusst KEINE Wiederverwendung von TrapTunnelsEngine.computeBlindTrapExpected
+// Value hier: diese Funktion simuliert viele komplette Netz-/Pfad-Runs per
+// Monte-Carlo (das ist ein TEST-Werkzeug fuer die Blind-EV-GARANTIE, siehe
+// TrapTunnelsEngine.test.ts) -- fuer einen bei jedem Tick aufgerufenen
+// Ertragsraten-Pfad waere das viel zu teuer. Stattdessen eine geschlossene
+// Naeherung: jede der (enemyCount * (pathLength+1)) Gegner-Positionen ueber
+// den gesamten Run gilt als unabhaengig GLEICHVERTEILT unter den
+// gridSize*gridSize Kreuzungen (grobe Annahme, ignoriert die tatsaechliche
+// Graph-/Pfadstruktur) -- daraus ergeben sich Treffer-/Kettenwahrscheinlichkeit
+// einer EINZELNEN blind platzierten Falle in geschlossener Form.
+function trapHitProbability(run: TrapTunnelsRunConfig): number {
+    const positionsPerEnemy = run.pathLength + 1;
+    const totalPositions = run.enemyCount * positionsPerEnemy;
+    const junctionCount = run.gridSize * run.gridSize;
+    return 1 - (1 - 1 / junctionCount) ** totalPositions;
+}
+
+// Naeherung fuer eine Kettenreaktion: zwei (der aktuell fest enemyCount=2)
+// Gegner muessen im SELBEN Schritt auf derselben Falle stehen -- ueber alle
+// (pathLength+1) Schritte gemittelt. Bei enemyCount < 2 strukturell 0 (keine
+// Kettenreaktion ohne einen zweiten Gegner moeglich).
+function trapChainProbability(run: TrapTunnelsRunConfig): number {
+    if (run.enemyCount < 2) return 0;
+    const positionsPerEnemy = run.pathLength + 1;
+    const junctionCount = run.gridSize * run.gridSize;
+    return positionsPerEnemy * (1 / junctionCount) * (1 / junctionCount);
+}
+
+// Blind-EV EINER platzierten Falle (Naeherung, siehe Datei-Kommentar oben) --
+// die Kettenwahrscheinlichkeit wird von der Gesamt-Trefferwahrscheinlichkeit
+// abgezogen, damit ein Kettentreffer nicht gleichzeitig als Einzelfang UND
+// als Kette gezaehlt wird.
+export function getTrapTunnelsBlindExpectedValuePerTrap(run: TrapTunnelsRunConfig): number {
+    const chainProbability = trapChainProbability(run);
+    const singleProbability = Math.max(0, trapHitProbability(run) - chainProbability);
+    return singleProbability * mean(run.singleCatchPayoutRange) + chainProbability * mean(run.chainCatchPayoutRange);
+}
+
+// Perfekt-Info-EV (Naeherung, OHNE echte Pfad-/Kettenplanung, wie in
+// game-spec.md 4.3 gefordert): bei vollstaendig sichtbarem Pfad platziert der
+// Attendant eine Falle direkt auf eine bekannte Gegner-Position -> ein
+// garantierter Einzelfang pro Falle. Keine Chain-Optimierung (das erfordert
+// echtes Koordinieren zweier Gegner-Pfade, explizit ausserhalb der
+// dokumentierten Vereinfachung).
+function getTrapTunnelsPerfectInfoExpectedValuePerTrap(run: TrapTunnelsRunConfig): number {
+    return mean(run.singleCatchPayoutRange);
+}
+
+// EV/Falle, linear interpoliert zwischen Blind-EV und Perfekt-Info-EV,
+// gewichtet mit dem Anteil der genutzten Vorschau-Reichweite -- dieselbe
+// Interpolations-IDEE wie getAttendantExpectedValuePerAction/
+// getGridAttendantExpectedValuePerMove oben, nur mit einer
+// netzwerk-/pfad-basierten Blind-/Perfekt-Info-Definition.
+export function getTrapTunnelsAttendantExpectedValuePerTrap(
+    run: TrapTunnelsRunConfig,
+    attendantPreviewRange: number,
+    maxPreviewRange: number,
+): number {
+    const blindEv = getTrapTunnelsBlindExpectedValuePerTrap(run);
+    const perfectInfoEv = getTrapTunnelsPerfectInfoExpectedValuePerTrap(run);
+    const precisionFraction = maxPreviewRange > 0 ? clamp01(attendantPreviewRange / maxPreviewRange) : 0;
+    return blindEv + precisionFraction * (perfectInfoEv - blindEv);
+}
+
+// Vollstaendige Ertragsrate des Trap-Tunnels-Automaten -- Komposition wie
+// getGridAttendantMachinePointsRate oben: Vorschau-Reichweite skaliert mit
+// Musterkenntnis (getAttendantLookahead, wiederverwendet statt dupliziert),
+// EV/Falle * platzierte Fallenanzahl, dann Effizienz + Aktionen/Sekunde. EINE
+// "Aktion" des Attendant entspricht hier einem kompletten Run (Platzierung +
+// Ausfuehrung aller trapCount Fallen) -- game-spec.md 4.3 "Attendant-
+// Automatisierung" fordert kein eigenes Zeitmodell dafuer.
+export function getTrapTunnelsAttendantMachinePointsRate(
+    run: TrapTunnelsRunConfig,
+    knowledge: number,
+    trapCount: number,
+    previewRange: number,
+    maxPreviewRange: number,
+): number {
+    const attendantPreviewRange = getAttendantLookahead(previewRange, knowledge);
+    const evPerTrap = getTrapTunnelsAttendantExpectedValuePerTrap(run, attendantPreviewRange, maxPreviewRange);
+    const efficiency = getAttendantEfficiency(knowledge);
+    return Math.max(0, evPerTrap) * trapCount * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
 }
 
 // --- Pool-Dynamik (Vordergrund-Optik) + Offline-Anwendung -----------------

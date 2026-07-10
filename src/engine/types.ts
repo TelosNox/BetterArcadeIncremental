@@ -16,8 +16,13 @@ import type Decimal from 'break_infinity.js';
 // erhoeht die Version erneut auf 3 (neues Pflichtfeld `machinePeakScore`,
 // siehe EngineState unten). Phase 7f (Greed Run Genre-Rework, siehe
 // STATUS.md/game-spec.md 4.2) erhoeht sie erneut auf 4 (neues Pflichtfeld
-// `gridFocusPreference`) -- aus demselben Grund keine Migration.
-export const CURRENT_SAVE_VERSION = 4;
+// `gridFocusPreference`) -- aus demselben Grund keine Migration. Phase 7i
+// (Trap Tunnels Genre-Rework, game-spec.md 4.3) erhoeht sie erneut auf 5:
+// Automat 2 wechselt von `kind: 'cyclic'` auf `kind: 'trapTunnels'`, alte
+// `machineUpgrades['trap-tunnels']`-Eintraege referenzieren Upgrade-ids, die
+// es nicht mehr gibt -- ebenfalls keine Migration, alte Saves werden
+// abgelehnt statt mit verwaisten Eintraegen weiterzulaufen.
+export const CURRENT_SAVE_VERSION = 5;
 
 // Gemeinsame Felder, die JEDER Automat hat, unabhaengig von seiner
 // Kernmechanik (Phase 7f, game-spec.md 4.2: Greed Run bekommt eine
@@ -70,7 +75,37 @@ export interface GridMachineConfig extends MachineIdentity {
     actionBudgetUpgrades: MachineUpgradeDef[];
 }
 
-export type MachineConfig = CyclicMachineConfig | GridMachineConfig;
+// Automat 2 "Trap Tunnels" (Phase 7i, game-spec.md 4.3): Tunnelnetz-Fallen-
+// Modell statt zyklisches Konter-Modell -- ersetzt die urspruengliche
+// CyclicMachineConfig-Belegung von Automat 2 vollstaendig. Nutzt
+// PatternEngine/CyclicActionDef nicht mehr (siehe TrapTunnelsEngine.ts).
+export interface TrapTunnelsMachineConfig extends MachineIdentity {
+    kind: 'trapTunnels';
+    run: TrapTunnelsRunConfig;
+    // Zwei UNABHAENGIGE Upgrade-Achsen (game-spec.md 4.3), strukturell analog
+    // zu sightRangeUpgrades/actionBudgetUpgrades oben, aber eigener
+    // Zahlenbereich (siehe MachineUpgradeEffect unten).
+    trapPreviewRangeUpgrades: MachineUpgradeDef[];
+    trapCountUpgrades: MachineUpgradeDef[];
+}
+
+export type MachineConfig = CyclicMachineConfig | GridMachineConfig | TrapTunnelsMachineConfig;
+
+// --- Trap Tunnels / Tunnelnetz-Fallen-Automat (Phase 7i, game-spec.md 4.3) -
+
+// Bewusst EIN Bundle-Objekt (wie GridSectorConfig oben) statt einzelner
+// Felder direkt auf TrapTunnelsMachineConfig -- TrapTunnelsEngine.ts nimmt
+// dieses Objekt komplett entgegen, dieselbe Konvention wie
+// GridRunEngine(config.grid, ...).
+export interface TrapTunnelsRunConfig {
+    gridSize: number; // 4 -- quadratisches Kreuzungs-Raster (4x4 = 16 Kreuzungen)
+    extraEdgeRange: [min: number, max: number]; // zusaetzliche Kanten ueber den Spannbaum hinaus (3-4)
+    pathLength: number; // Schritte (Kanten) pro Gegner-Pfad, game-spec.md 4.3: fix, z.B. 6
+    enemyCount: number; // fest 2 in dieser Version (game-spec.md 4.3 "ausdruecklich noch nicht Teil dieser Version")
+    minStartDistance: number; // Mindest-Graphdistanz zwischen den Start-Kreuzungen der Gegner
+    singleCatchPayoutRange: [min: number, max: number]; // ein Gegner trifft eine Falle
+    chainCatchPayoutRange: [min: number, max: number]; // zwei Gegner treffen im selben Schritt dieselbe Falle
+}
 
 // --- Greed Run / Grid-Automat (Phase 7f, game-spec.md 4.2) ----------------
 
@@ -197,13 +232,21 @@ export interface UpgradeDef {
 // eigene Typen statt Wiederverwendung -- previewDepth/previewPrecision
 // gelten fuer das zyklische Zwei-Achsen-Modell (Automat 2-4), waehrend
 // gridSightRange/gridPrecision/gridActionBudget einen eigenen, unabhaengigen
-// Zahlenbereich haben (siehe machines.config.ts).
+// Zahlenbereich haben (siehe machines.config.ts). Phase 7i (game-spec.md 4.3)
+// erweitert um zwei weitere Varianten fuer Trap Tunnels' Upgrade-Achsen --
+// wieder eigene Typen statt Wiederverwendung, da trapPreviewRange (Schritte
+// PRO GEGNER-PFAD, gebunden an dessen fixen Start, nicht an eine
+// Spielerposition -- Lektion aus Phase 7g, siehe game-spec.md 4.3) und
+// trapCount (gleichzeitig platzierbare Fallen) einen eigenen Zahlenbereich
+// haben.
 export type MachineUpgradeEffect =
     | { type: 'previewDepth'; value: number }
     | { type: 'previewPrecision'; value: number }
     | { type: 'gridSightRange'; value: number }
     | { type: 'gridPrecision'; value: number }
-    | { type: 'gridActionBudget'; value: number };
+    | { type: 'gridActionBudget'; value: number }
+    | { type: 'trapPreviewRange'; value: number }
+    | { type: 'trapCount'; value: number };
 
 export interface MachineUpgradeDef {
     id: string;
