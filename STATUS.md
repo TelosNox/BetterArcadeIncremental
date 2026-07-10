@@ -4,8 +4,74 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7k (Trap Tunnels Fix: Gegner-Start-Kreuzungen während Planung sichtbar) — implementiert, alle automatisierten Checks grün, zusätzlich per Playwright-Skript visuell verifiziert, aber noch nicht vom Nutzer gespielt.
-**Läuft/als Nächstes:** Nutzer-Playtest für 7j/7k gemeinsam abwarten (7k war ein Fix vor dem ersten Playtest von 7j, beide zusammen noch nicht vom Nutzer selbst gespielt). Danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7l (Trap Tunnels Fix: Fallenanzahl-/Dynamitanzahl-Upgrades wirken sofort im laufenden Run) — implementiert, alle automatisierten Checks grün, zusätzlich per Playwright-Skript visuell verifiziert, aber noch nicht vom Nutzer gespielt.
+**Läuft/als Nächstes:** Nutzer-Playtest für 7j/7k/7l gemeinsam abwarten (alle drei waren Korrekturen vor bzw. während des ersten echten Playtests von Trap Tunnels' neuem Kernmodell, noch nicht vom Nutzer selbst bestätigt). Danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7l: Trap Tunnels Fix — Fallenanzahl-/Dynamitanzahl-Upgrades wirken sofort im laufenden Run (2026-07-10, Nutzer-Feedback)
+
+**Problem (Nutzer-Feedback):** In `TrapTunnelsScene.startNewRun()` werden `trapCount`/`dynamiteCount`/`enemyCount` einmalig aus den aktuell besessenen Upgrades gelesen und fest in den `TrapTunnelsEngine`-Konstruktor gegeben (`maxTraps`/`maxDynamite`/`enemyCount` sind dort `private readonly`-Felder). Kauft der Spieler mitten in der Planungsphase ein Fallenanzahl- oder Dynamitanzahl-Upgrade (`renderUpgradeLadderShop`-Callback ruft nur `persist()` + `this.renderPhase()` auf, fasst `this.engine` nicht an), bleibt die Kapazität im GERADE laufenden Run unverändert — das Upgrade wirkt erst ab dem nächsten Run. Für Fallen/Dynamit ist das unerwünscht: siehe `docs/game-spec.md` 4.3, neuer Absatz "Live-Wirkung von Upgrades während der Planungsphase" (verbindliche Ergänzung).
+
+**Korrektur:** Fallenanzahl- und Dynamitanzahl-Upgrades wirken SOFORT, auch mitten in einer laufenden Planungsphase — ein gekauftes Upgrade erhöht die Kapazität für den GERADE laufenden Run. Gegneranzahl-Upgrades wirken weiterhin erst ab dem NÄCHSTEN Run (analog zu Greed Runs Aktionsbudget) — die Gegner-Start-Kreuzungen sind seit Phase 7k einmalig bei Run-Start gezogen und während der gesamten Planungsphase fix sichtbar; eine mitten in der Planung erhöhte Gegneranzahl müsste nachträglich neue Start-Kreuzungen ziehen, was diese Fixierung bräche. Das ist eine bewusste, strukturell bedingte Ungleichbehandlung der drei Achsen, keine Inkonsistenz.
+
+**Technische Konsequenz:**
+
+1. `src/engine/TrapTunnelsEngine.ts`: `maxTraps`/`maxDynamite` von `private readonly` auf `private` (mutierbar) ändern. Neue Methoden `setMaxTraps(value: number): void`/`setMaxDynamite(value: number): void` ergänzen (einfache Zuweisung reicht — Upgrades sind monoton steigend, ein Downgrade-Fall muss nicht behandelt werden; die bestehenden `canPlaceTrap`/`placeTrap`/`canBlastEdge`/`blastEdge`-Prüfungen gegen `this.placedTraps.size`/`this.blastedEdges.size` funktionieren mit einem größeren `maxTraps`/`maxDynamite`-Wert unverändert). `enemyCount`/`enemyStarts` bleiben bewusst `readonly` (siehe Korrektur oben).
+2. `src/game/scenes/TrapTunnelsScene.ts`: `renderUpgradeLadderShop`-Callback (oder eine gemeinsame Stelle, die nach jedem Upgrade-Kauf läuft) muss nach einem erfolgreichen Kauf eines Fallenanzahl- oder Dynamitanzahl-Upgrades `this.engine?.setMaxTraps(getTrapCount(...))`/`this.engine?.setMaxDynamite(getDynamiteCount(...))` mit dem frisch gelesenen Wert aufrufen (nur falls `this.engine` existiert, also während eines laufenden Runs — beim Kauf zwischen zwei Runs ist ohnehin `startNewRun()` die nächste Quelle der Wahrheit). Statustext (`updateStatusText`, zeigt "Fallen X/Y" usw.) liest `getTrapCount`/`getDynamiteCount` ohnehin bereits live aus den Upgrades, keine Änderung dort nötig — nur der tatsächliche Engine-Zustand (`canPlaceTrap`/`canBlastEdge`) muss synchron gehalten werden.
+3. Tests: `TrapTunnelsEngine.test.ts` ergänzen um Fälle für `setMaxTraps`/`setMaxDynamite` (Kapazität steigt sofort, bereits platzierte Fallen/gesprengte Kanten bleiben unangetastet, `canPlaceTrap`/`canBlastEdge` erlauben danach mehr).
+
+**Bewusst NICHT Teil dieser Korrektur:** Gegneranzahl-Upgrade-Timing bleibt wie bisher (erst nächster Run), keine Balance-Änderung an den Upgrade-Kosten/-Staffelungen.
+
+### Ergebnis: Phase 7l umgesetzt (2026-07-10)
+
+Reihenfolge wie in CLAUDE.md gefordert: Engine-Logik zuerst mit Vitest
+abgesichert, danach an die Szene angebunden. Keine Speicherstand-relevante
+Änderung nötig (`CURRENT_SAVE_VERSION` bleibt bei 6).
+
+**`src/engine/TrapTunnelsEngine.ts`+Test (+4 Tests, 58 statt 54):**
+`maxTraps`/`maxDynamite` von `private readonly` auf `private` geändert
+(`enemyCount`/`enemyStarts` bleiben bewusst `readonly`, siehe Begründung im
+Klassen-Kommentar: eine live erhöhte Gegneranzahl würde neue Start-
+Kreuzungen brauchen und damit die Fixierung aus Phase 7k brechen). Neue
+Methoden `setMaxTraps(value)`/`setMaxDynamite(value)` — einfache Zuweisung,
+keine Validierung gegen ein Downgrade nötig (Upgrades sind monoton
+steigend). `canPlaceTrap`/`placeTrap`/`canBlastEdge`/`blastEdge` mussten
+inhaltlich nicht angefasst werden, da sie ohnehin live gegen
+`this.maxTraps`/`this.maxDynamite` prüfen. Neue Tests: `setMaxTraps`/
+`setMaxDynamite` erhöhen die Kapazität sofort (ein vorher blockierter
+`placeTrap`-/`blastEdge`-Aufruf gelingt danach), bereits platzierte Fallen/
+gesprengte Kanten bleiben davon unberührt.
+
+**`src/game/scenes/TrapTunnelsScene.ts`:** Neue private Methode
+`syncEngineCapacityFromUpgrades()` liest nach jedem erfolgreichen Upgrade-
+Kauf beide Werte (`getTrapCount`/`getDynamiteCount`) frisch aus den
+Upgrades und reicht sie an `this.engine.setMaxTraps`/`setMaxDynamite`
+durch (nur falls `this.engine` existiert, also während eines laufenden
+Runs) — bewusst unabhängig davon, welche der drei Leitern tatsächlich
+gekauft wurde (harmlos, falls sich der jeweils andere Wert nicht
+geändert hat), wie im Prompt vorgeschlagen. `renderUpgradeLadderShop`s
+Kauf-Callback ruft das jetzt zusätzlich zu `persist()` auf. Gegneranzahl
+bewusst NICHT synchronisiert — wirkt weiterhin erst ab `startNewRun()`.
+`updateStatusText()` unverändert (liest `getTrapCount`/`getDynamiteCount`/
+`getEnemyCount` ohnehin bereits live aus den Upgrades, unabhängig vom
+tatsächlichen Engine-Zustand).
+
+**Verifiziert:** `npm test` (**350/350 grün**, vorher 346 nach Phase 7k),
+`npm run lint` sauber, `npx tsc --noEmit` sauber, `npm run build-nolog`
+erfolgreich. Zusätzlich per Playwright-Skript gegen `npm run dev-nolog`
+(Skript + temporäre Playwright-Installation danach wieder entfernt) mit
+Screenshots visuell geprüft: frischer Run (Start-Werte, keine Upgrades
+gekauft) — erste Falle platziert (Kapazität erreicht), zweite Falle an
+anderer Kreuzung schlägt VOR dem Upgrade-Kauf fehl; Fallenanzahl-Upgrade
+gekauft, Statustext zeigt sofort "Fallen 1/2", zweite Falle lässt sich
+DANACH ohne Run-Neustart platzieren; analog für Dynamit (Kante vor dem
+Kauf nicht sprengbar, nach dem Kauf sofort sprengbar, "Dynamit 1/1
+gesprengt"). Kontrolle: Gegneranzahl-Upgrade mitten in der Planung
+gekauft — beim anschließenden "Los" animierte weiterhin nur der EINE
+Gegner (A) aus dem laufenden Run, keine zweite Figur, obwohl der
+Statustext bereits "Gegner: 2" anzeigt (erwartetes Verhalten, siehe
+Ungleichbehandlung oben). Keine Konsolenfehler über den gesamten
+Testlauf. **Noch nicht vom Nutzer selbst gespielt/bestätigt** — das ist
+der nächste Schritt, kein automatisierter Ersatz dafür.
 
 ## NEUE PHASE 7k: Trap Tunnels Fix — Gegner-Start-Kreuzungen während Planung sichtbar (2026-07-10, Nutzer-Feedback vor dem ersten Playtest von 7j)
 

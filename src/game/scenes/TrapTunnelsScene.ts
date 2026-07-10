@@ -396,6 +396,23 @@ export class TrapTunnelsScene extends Scene {
         );
     }
 
+    // Fallenanzahl-/Dynamitanzahl-Upgrades wirken SOFORT, auch mitten in
+    // einer laufenden Planungsphase (Phase 7l, game-spec.md 4.3 "Live-Wirkung
+    // von Upgrades waehrend der Planungsphase") -- nach jedem erfolgreichen
+    // Kauf werden beide Werte frisch aus den Upgrades gelesen und an die
+    // laufende Engine-Instanz durchgereicht (falls gerade ein Run laeuft;
+    // harmlos, falls sich der jeweils andere Wert nicht geaendert hat).
+    // Gegneranzahl wird bewusst NICHT synchronisiert -- die Gegner-Start-
+    // Kreuzungen sind seit Phase 7k waehrend der gesamten Planungsphase fix
+    // (siehe TrapTunnelsEngine.ts), eine live erhoehte Gegneranzahl wirkt
+    // deshalb weiterhin erst ab dem naechsten Run (startNewRun()).
+    private syncEngineCapacityFromUpgrades(): void {
+        if (!this.engine) return;
+        const owned = this.getOwnedUpgradeIds();
+        this.engine.setMaxTraps(getTrapCount(this.config, owned));
+        this.engine.setMaxDynamite(getDynamiteCount(this.config, owned));
+    }
+
     private renderUpgradeLadderShop(y: number, ladder: readonly MachineUpgradeDef[], owned: readonly string[]): void {
         const nextUpgrade = ladder.find((upgrade) => !owned.includes(upgrade.id));
         if (!nextUpgrade) return;
@@ -413,6 +430,7 @@ export class TrapTunnelsScene extends Scene {
             () => {
                 if (economyStore.purchaseMachineUpgrade(this.config.id, nextUpgrade.id, cost)) {
                     persist();
+                    this.syncEngineCapacityFromUpgrades();
                     this.renderPhase();
                 }
             },

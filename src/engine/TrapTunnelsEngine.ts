@@ -318,8 +318,17 @@ export function computeBlindTrapExpectedValue(
 export class TrapTunnelsEngine {
     private readonly network: TunnelNetwork;
     private readonly config: TrapTunnelsRunConfig;
-    private readonly maxTraps: number;
-    private readonly maxDynamite: number;
+    // Bewusst NICHT readonly (Phase 7l, game-spec.md 4.3 "Live-Wirkung von
+    // Upgrades waehrend der Planungsphase"): ein waehrend eines laufenden
+    // Runs gekauftes Fallenanzahl-/Dynamitanzahl-Upgrade muss die Kapazitaet
+    // SOFORT erhoehen, siehe setMaxTraps/setMaxDynamite unten. enemyCount/
+    // enemyStarts bleiben dagegen readonly -- eine live erhoehte
+    // Gegneranzahl wuerde neue Start-Kreuzungen brauchen und damit die
+    // Fixierung aus Phase 7k ("Start-Kreuzungen waehrend der GESAMTEN
+    // Planungsphase fix sichtbar") brechen, deshalb wirkt sie bewusst erst
+    // ab dem naechsten Run.
+    private maxTraps: number;
+    private maxDynamite: number;
     private readonly enemyCount: number;
     private readonly enemyStarts: readonly number[];
     private readonly rng: () => number;
@@ -371,6 +380,15 @@ export class TrapTunnelsEngine {
         return this.maxTraps;
     }
 
+    // Erhoeht/setzt die Fallenanzahl-Kapazitaet des GERADE laufenden Runs
+    // sofort (Phase 7l) -- keine Validierung gegen ein Downgrade noetig, da
+    // Upgrades monoton steigend sind. Bereits platzierte Fallen bleiben
+    // unangetastet; canPlaceTrap/placeTrap vergleichen ohnehin live gegen
+    // this.maxTraps und erlauben danach automatisch mehr.
+    setMaxTraps(value: number): void {
+        this.maxTraps = value;
+    }
+
     getPlacedTraps(): ReadonlySet<number> {
         return this.placedTraps;
     }
@@ -393,6 +411,15 @@ export class TrapTunnelsEngine {
 
     getMaxDynamite(): number {
         return this.maxDynamite;
+    }
+
+    // Erhoeht/setzt die Dynamitanzahl-Kapazitaet des GERADE laufenden Runs
+    // sofort (Phase 7l, analog zu setMaxTraps oben) -- keine Validierung
+    // gegen ein Downgrade noetig. Bereits gesprengte Kanten bleiben
+    // unangetastet; canBlastEdge/blastEdge vergleichen ohnehin live gegen
+    // this.maxDynamite.
+    setMaxDynamite(value: number): void {
+        this.maxDynamite = value;
     }
 
     getBlastedEdges(): ReadonlySet<string> {

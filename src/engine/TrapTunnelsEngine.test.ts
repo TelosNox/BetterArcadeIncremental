@@ -461,6 +461,43 @@ describe('TrapTunnelsEngine (Phase 7j, game-spec.md 4.3 v2: Zufallsbewegung + Dy
             expect(engine.getBlastedEdges().size).toBe(0);
         });
 
+        describe('setMaxTraps/setMaxDynamite (Phase 7l: Live-Wirkung von Upgrades waehrend der Planungsphase)', () => {
+            it('setMaxTraps erhoeht die Kapazitaet sofort -- ein vorher blockierter placeTrap-Aufruf gelingt danach', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 1, 0, 2, Math.random);
+                engine.placeTrap(0);
+                expect(engine.placeTrap(1)).toBe(false);
+                engine.setMaxTraps(2);
+                expect(engine.getMaxTraps()).toBe(2);
+                expect(engine.placeTrap(1)).toBe(true);
+            });
+
+            it('setMaxTraps laesst bereits platzierte Fallen unangetastet', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 1, 0, 2, Math.random);
+                engine.placeTrap(0);
+                engine.setMaxTraps(3);
+                expect(engine.getPlacedTraps()).toEqual(new Set([0]));
+            });
+
+            it('setMaxDynamite erhoeht die Kapazitaet sofort -- ein vorher blockierter blastEdge-Aufruf gelingt danach', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 1, 2, Math.random);
+                const [a, b] = engine.getNetwork().edges[0];
+                const [c, d] = engine.getNetwork().edges[1];
+                engine.blastEdge(a, b);
+                expect(engine.blastEdge(c, d)).toBe(false);
+                engine.setMaxDynamite(2);
+                expect(engine.getMaxDynamite()).toBe(2);
+                expect(engine.blastEdge(c, d)).toBe(true);
+            });
+
+            it('setMaxDynamite laesst bereits gesprengte Kanten unangetastet', () => {
+                const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 2, 1, 2, Math.random);
+                const [a, b] = engine.getNetwork().edges[0];
+                engine.blastEdge(a, b);
+                engine.setMaxDynamite(3);
+                expect(engine.getBlastedEdges()).toEqual(new Set([edgeKey(a, b)]));
+            });
+        });
+
         it('resolve() liefert enemyCount-viele Pfade der Laenge pathLength+1', () => {
             const engine = new TrapTunnelsEngine(FIXTURE_CONFIG, 3, 0, 3, Math.random);
             engine.resolve();
