@@ -191,6 +191,32 @@ describe('SaveSystem', () => {
         expect(saveSystem.load()).toBeNull();
     });
 
+    it('load() gibt bei einem Phase-7f-Speicherstand (saveVersion 4, vor dem Trap-Tunnels-Genre-Rework) null zurueck', () => {
+        const storage = new MemoryStorage();
+        const phase7fState = {
+            saveVersion: 4,
+            tickets: '100',
+            machinePoints: { 'greed-run': '5', 'trap-tunnels': '3' },
+            machinePeakScore: { 'greed-run': '5', 'trap-tunnels': '3' },
+            unlockedMachines: [],
+            attendantKnowledge: {},
+            hallUpgrades: [],
+            completedMachines: [],
+            // Alte, jetzt bedeutungslose depthUpgrades/precisionUpgrades-ids fuer
+            // 'trap-tunnels' (Phase 7i wechselt diesen Automaten auf kind:
+            // 'trapTunnels' mit eigenen Upgrade-ids) -- genau der Fall, den
+            // die fehlende Migration bewusst abfangen soll (STATUS.md Phase 7i).
+            machineUpgrades: { 'trap-tunnels': ['trap-tunnels-depth-2'] },
+            attendantPools: {},
+            lastAttendantUpdate: Date.now(),
+            gridFocusPreference: {},
+        };
+        storage.setItem('arcade-incremental-save', JSON.stringify(phase7fState));
+        const saveSystem = new SaveSystem(storage);
+
+        expect(saveSystem.load()).toBeNull();
+    });
+
     it('clear() entfernt den gespeicherten Stand', () => {
         const saveSystem = new SaveSystem(new MemoryStorage());
         saveSystem.save(stateWithSomeData());

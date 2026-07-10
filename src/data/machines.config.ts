@@ -8,12 +8,15 @@ import type {
     Milestone,
     ResolvedAction,
     SectorCategory,
+    TrapTunnelsMachineConfig,
+    TrapTunnelsRunConfig,
 } from '../engine/types';
 import {
     type AttendantRate,
     computeStationaryDistribution,
     getAttendantMachinePointsRate,
     getGridAttendantMachinePointsRate,
+    getTrapTunnelsAttendantMachinePointsRate,
 } from '../engine/AttendantEngine';
 import { SECTOR_CATEGORIES } from '../engine/GridRunEngine';
 
@@ -88,6 +91,27 @@ export const SECTOR_SYMBOLS: Readonly<Record<SectorCategory, string>> = {
 
 export function getSectorColor(category: SectorCategory): number {
     return SECTOR_COLORS[category];
+}
+
+// Phase 7i (Trap Tunnels Genre-Rework, game-spec.md 4.3): eigene, ebenfalls
+// farbenblind-sichere Palette (Teilmenge Okabe-Ito) fuer die beiden Gegner
+// UND die Fallen -- CLAUDE.md "Barrierefreiheit bei Farbcodierung": Farbe ist
+// nie das einzige Merkmal. Gegner unterscheiden sich zusaetzlich ueber
+// ENEMY_LABELS (Buchstabe A/B), Fallen zusaetzlich ueber ihre FORM (Raute
+// statt Kreis, siehe TrapTunnelsScene.ts) statt nur ueber TRAP_COLOR.
+export const ENEMY_COLORS: readonly number[] = [
+    0x56b4e9, // Sky Blue -- Gegner A
+    0xe69f00, // Orange -- Gegner B
+];
+export const ENEMY_LABELS: readonly string[] = ['A', 'B'];
+export const TRAP_COLOR = 0xd55e00; // Vermillion -- Fallen (Form: Raute)
+
+export function getEnemyColor(index: number): number {
+    return ENEMY_COLORS[((index % ENEMY_COLORS.length) + ENEMY_COLORS.length) % ENEMY_COLORS.length];
+}
+
+export function getEnemyLabel(index: number): string {
+    return ENEMY_LABELS[((index % ENEMY_LABELS.length) + ENEMY_LABELS.length) % ENEMY_LABELS.length];
 }
 
 // Feste, NICHT kaufbare Normalisierungs-Konstante pro Automat (game-spec.md
@@ -368,8 +392,80 @@ export function getGridMachineUpgrade(machine: GridMachineConfig, upgradeId: str
     );
 }
 
+// --- Trap-Tunnels-Automat: zwei unabhaengige Upgrade-Achsen (Phase 7i, -----
+// game-spec.md 4.3 "Zwei unabhaengige Upgrade-Achsen") ----------------------
+//
+// Bewusst KEINE Kreuz-Preis-Kopplung, wie schon beim Grid-Automaten oben --
+// jede Achse hat ihre eigene, unabhaengige Kostenleiter, bezahlt mit den
+// eigenen Automaten-Punkten dieses Automaten.
+
+export const START_TRAP_PREVIEW_RANGE = 1;
+// Deckt sich bewusst mit TRAP_TUNNELS.run.pathLength (siehe unten) -- bei
+// voller Stufe ist der komplette restliche Gegner-Pfad sichtbar (game-spec.md
+// 4.3 "Vorschau-Reichweite").
+export const MAX_TRAP_PREVIEW_RANGE = 6;
+export const START_TRAP_COUNT = 1;
+export const MAX_TRAP_COUNT = 3;
+
+const TRAP_PREVIEW_NUMERALS = ['I', 'II', 'III'];
+const TRAP_COUNT_NUMERALS = ['I', 'II'];
+
+function buildTrapPreviewRangeUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-trap-preview-${value}`,
+        name: `${namePrefix} ${TRAP_PREVIEW_NUMERALS[i]}`,
+        description: `Zeigt die naechsten ${value} Schritte JEDES Gegner-Pfads (statt ${
+            i === 0 ? START_TRAP_PREVIEW_RANGE : values[i - 1]
+        }).`,
+        cost: baseCosts[i],
+        effect: { type: 'trapPreviewRange', value },
+    }));
+}
+
+function buildTrapCountUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-trap-count-${value}`,
+        name: `${namePrefix} ${TRAP_COUNT_NUMERALS[i]}`,
+        description: `Erlaubt ${value} gleichzeitig platzierte Fallen (statt ${i === 0 ? START_TRAP_COUNT : values[i - 1]}).`,
+        cost: baseCosts[i],
+        effect: { type: 'trapCount', value },
+    }));
+}
+
+export function getTrapPreviewRange(machine: TrapTunnelsMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.trapPreviewRangeUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'trapPreviewRange' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_TRAP_PREVIEW_RANGE);
+}
+
+export function getTrapCount(machine: TrapTunnelsMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.trapCountUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'trapCount' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_TRAP_COUNT);
+}
+
+export function getTrapTunnelsMachineUpgrade(machine: TrapTunnelsMachineConfig, upgradeId: string): MachineUpgradeDef | undefined {
+    return [...machine.trapPreviewRangeUpgrades, ...machine.trapCountUpgrades].find((upgrade) => upgrade.id === upgradeId);
+}
+
 // --- Attendant-Ertragsrate (Phase 7d, STATUS.md Teil 2; Phase 7f erweitert
-// um den Grid-Automaten-Zweig) --------------------------------------------
+// um den Grid-Automaten-Zweig, Phase 7i um den Trap-Tunnels-Zweig) --------
 //
 // Komposition der reinen Engine-Mathematik (AttendantEngine.ts) mit den
 // Data-Layer-Werten dieses Automaten (Pattern/Aktionen/Vorschau-Upgrades ODER
@@ -387,22 +483,32 @@ export function getMachineAttendantRate(
     ownedUpgradeIds: readonly string[],
     ticketYieldRate: number,
 ): AttendantRate {
-    const machinePointsPerSecond =
-        machine.kind === 'grid'
-            ? getGridAttendantMachinePointsRate(
-                  machine.grid,
-                  knowledge,
-                  getGridPrecisionLevel(machine, ownedUpgradeIds),
-                  MAX_GRID_PRECISION,
-              )
-            : getAttendantMachinePointsRate(
-                  machine.actions,
-                  computeStationaryDistribution(machine.pattern),
-                  knowledge,
-                  getPreviewDepth(machine, ownedUpgradeIds),
-                  getPreviewPrecision(machine, ownedUpgradeIds),
-                  MAX_PRECISION,
-              );
+    let machinePointsPerSecond: number;
+    if (machine.kind === 'grid') {
+        machinePointsPerSecond = getGridAttendantMachinePointsRate(
+            machine.grid,
+            knowledge,
+            getGridPrecisionLevel(machine, ownedUpgradeIds),
+            MAX_GRID_PRECISION,
+        );
+    } else if (machine.kind === 'trapTunnels') {
+        machinePointsPerSecond = getTrapTunnelsAttendantMachinePointsRate(
+            machine.run,
+            knowledge,
+            getTrapCount(machine, ownedUpgradeIds),
+            getTrapPreviewRange(machine, ownedUpgradeIds),
+            MAX_TRAP_PREVIEW_RANGE,
+        );
+    } else {
+        machinePointsPerSecond = getAttendantMachinePointsRate(
+            machine.actions,
+            computeStationaryDistribution(machine.pattern),
+            knowledge,
+            getPreviewDepth(machine, ownedUpgradeIds),
+            getPreviewPrecision(machine, ownedUpgradeIds),
+            MAX_PRECISION,
+        );
+    }
     return {
         machinePointsPerSecond,
         hallTicketsPerSecond: machinePointsPerSecond * machine.ticketYieldFactor * ticketYieldRate,
@@ -512,48 +618,47 @@ export const GREED_RUN: GridMachineConfig = {
 };
 
 // ========================================================================
-// "Trap Tunnels" (Automat 2) laut game-spec.md 4.3: Dig-Dug/Q*bert-Twist.
-// Skalierungsfaktor gegenueber Greed Run: 120/100 = 1.2 (Meilenstein-Verhaeltnis).
+// "Trap Tunnels" (Automat 2) laut game-spec.md 4.3 (Phase 7i Genre-Rework,
+// 2026-07-10): Tunnelnetz-Fallen-Modell statt zyklisches Konter-Modell.
+// Ersetzt das vorherige 5-Zustands-Zyklus-Modell VOLLSTAENDIG -- nutzt
+// PatternEngine/CyclicActionDef nicht mehr (siehe TrapTunnelsEngine.ts).
+// Meilenstein-Schwellen (25/60/120) und ticketYieldFactor (~0.913, Skalierungs-
+// faktor 1.2 gegenueber Greed Run) UNVERAENDERT aus der bisherigen Config
+// uebernommen (game-spec.md 4.3 Punkt 9) -- nur Zug-/Ausfuehrungslogik und
+// Vorschau sind neu.
 // ========================================================================
 
-const TRAP_TUNNELS_STATES = ['stabil', 'wackelig', 'einsturz', 'verschuettet', 'freigelegt'];
+// 4x4-Kreuzungs-Raster (16 Kreuzungen), Spannbaum + 3-4 Zusatzkanten,
+// Pfadlaenge 6 pro Gegner (7 Positionen inkl. Start), 2 Gegner mit
+// Mindestabstand 3 (game-spec.md 4.3 "Tunnelnetz-Generierung"). Kein
+// negativer Payout-Fall (game-spec.md 4.3 "Payout") -- die Blind-EV-Garantie
+// ist dadurch strukturell erfuellt, solange die Trefferwahrscheinlichkeit > 0
+// ist (per Simulation ueber viele Seeds verifiziert, siehe
+// TrapTunnelsEngine.test.ts).
+const TRAP_TUNNELS_RUN: TrapTunnelsRunConfig = {
+    gridSize: 4,
+    extraEdgeRange: [3, 4],
+    pathLength: 6,
+    enemyCount: 2,
+    minStartDistance: 3,
+    singleCatchPayoutRange: [7, 12],
+    chainCatchPayoutRange: [24, 34],
+};
 
-const TRAP_TUNNELS_ACTIONS = buildCyclicActions(TRAP_TUNNELS_STATES, [
-    { id: 'sprengladung', payoutBig: [22, 30], payoutSimple: [7, 11], payoutLoss: [-13, -9] },
-    { id: 'stuetzpfeiler', payoutBig: [22, 30], payoutSimple: [7, 11], payoutLoss: [-13, -9] },
-    { id: 'schaufelzug', payoutBig: [22, 30], payoutSimple: [7, 11], payoutLoss: [-13, -9] },
-    { id: 'tunnelblick', payoutBig: [22, 30], payoutSimple: [7, 11], payoutLoss: [-13, -9] },
-    { id: 'notausstieg', payoutBig: [22, 30], payoutSimple: [7, 11], payoutLoss: [-13, -9] },
-]);
-
-// Blind-EV-Garantie: stationaere Verteilung stabil ~22.7%, wackelig ~20.5%,
-// einsturz ~18.9%, verschuettet ~19.5%, freigelegt ~18.4%. Blind-EV je
-// Aktion zwischen ~7.68 (a2/stuetzpfeiler) und ~8.96 (a5/notausstieg),
-// Verhaeltnis ~1.17 -- alle > 0, keine Dominanz.
-export const TRAP_TUNNELS: CyclicMachineConfig = {
-    kind: 'cyclic',
+export const TRAP_TUNNELS: TrapTunnelsMachineConfig = {
+    kind: 'trapTunnels',
     id: 'trap-tunnels',
     name: 'Trap Tunnels',
     theme: 'digdug-twist',
     entryPoint: false,
-    pattern: {
-        states: TRAP_TUNNELS_STATES,
-        transitions: {
-            stabil: { stabil: 0.5, wackelig: 0.3, einsturz: 0.1, verschuettet: 0.05, freigelegt: 0.05 },
-            wackelig: { stabil: 0.1, wackelig: 0.35, einsturz: 0.35, verschuettet: 0.15, freigelegt: 0.05 },
-            einsturz: { stabil: 0.05, wackelig: 0.1, einsturz: 0.3, verschuettet: 0.4, freigelegt: 0.15 },
-            verschuettet: { stabil: 0.05, wackelig: 0.05, einsturz: 0.1, verschuettet: 0.3, freigelegt: 0.5 },
-            freigelegt: { stabil: 0.4, wackelig: 0.2, einsturz: 0.1, verschuettet: 0.1, freigelegt: 0.2 },
-        },
-        baseVisibility: 1,
-        visibilityPerUpgrade: [],
-    },
-    actions: TRAP_TUNNELS_ACTIONS,
     milestones: [{ threshold: 25 }, { threshold: 60 }, { threshold: 120 }],
-    // Basispreise = Greed Run * 1.2 (Skalierungsfaktor), gerundet. Total
-    // interleaved Kosten ~108.1 Tickets bei Schwelle 120 -> 90.1%.
-    depthUpgrades: buildDepthUpgrades('trap-tunnels', 'Tunnelkarte', [2, 5, 10, 22]),
-    precisionUpgrades: buildPrecisionUpgrades('trap-tunnels', 'Erdlesung', [4, 7, 19]),
+    run: TRAP_TUNNELS_RUN,
+    // 3 Vorschau-Reichweite-Stufen (1 -> 2 -> 4 -> 6, letzte Stufe deckt sich
+    // mit run.pathLength) + 2 Fallenanzahl-Stufen (1 -> 2 -> 3) -- Basispreise
+    // = Greed Runs Grid-Upgrade-Basispreise * 1.2 (Skalierungsfaktor),
+    // gerundet, analog zum bisherigen Vorgehen bei den zyklischen Automaten.
+    trapPreviewRangeUpgrades: buildTrapPreviewRangeUpgrades('trap-tunnels', 'Tunnelkarte', [2, 4, 6], [4, 8, 18]),
+    trapCountUpgrades: buildTrapCountUpgrades('trap-tunnels', 'Fallenwerkstatt', [2, 3], [5, 12]),
     ticketYieldFactor: ticketYieldFactorFor(1.2), // ~= 0.913
 };
 

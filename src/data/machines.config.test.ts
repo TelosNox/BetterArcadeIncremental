@@ -3,11 +3,14 @@ import {
     BEAT_LEDGER,
     CHAMPIONS_LEDGER,
     CROSS_PRICE_SURCHARGE_K,
+    ENEMY_COLORS,
     GREED_RUN,
     MACHINES,
     MAX_GRID_PRECISION,
     MAX_PRECISION,
     MAX_SIGHT_RANGE,
+    MAX_TRAP_COUNT,
+    MAX_TRAP_PREVIEW_RANGE,
     N_STATES,
     SECTOR_COLORS,
     START_ACTION_BUDGET,
@@ -15,6 +18,8 @@ import {
     START_GRID_PRECISION,
     START_PRECISION,
     START_SIGHT_RANGE,
+    START_TRAP_COUNT,
+    START_TRAP_PREVIEW_RANGE,
     TRAP_TUNNELS,
     buildCyclicActions,
     computeCandidateExclusionOrder,
@@ -35,6 +40,9 @@ import {
     getSectorColor,
     getSightRange,
     getStateColor,
+    getTrapCount,
+    getTrapPreviewRange,
+    getTrapTunnelsMachineUpgrade,
     getUpgradeCostToMilestoneRatio,
     isFinalMilestoneReached,
     resolveMachineAction,
@@ -44,12 +52,15 @@ import type { CyclicMachineConfig } from '../engine/types';
 import { PatternEngine } from '../engine/PatternEngine';
 import { computeStationaryDistribution } from '../engine/AttendantEngine';
 import { computeBlindExpectedValue, SECTOR_CATEGORIES } from '../engine/GridRunEngine';
+import { computeBlindTrapExpectedValue } from '../engine/TrapTunnelsEngine';
 
-// Phase 7f (Greed Run Genre-Rework): Greed Run ist jetzt ein Grid-Automat
-// (kind: 'grid') und hat kein pattern/actions/depthUpgrades/precisionUpgrades
-// mehr -- alle Tests, die diese Felder brauchen, laufen ab hier nur noch
-// ueber die drei unveraendert zyklischen Automaten (kind: 'cyclic').
-const CYCLIC_MACHINES: readonly CyclicMachineConfig[] = [TRAP_TUNNELS, BEAT_LEDGER, CHAMPIONS_LEDGER];
+// Phase 7f (Greed Run Genre-Rework): Greed Run ist ein Grid-Automat (kind:
+// 'grid'). Phase 7i (Trap Tunnels Genre-Rework): Trap Tunnels ist jetzt ein
+// eigener kind ('trapTunnels') -- beide haben kein pattern/actions/
+// depthUpgrades/precisionUpgrades mehr. Alle Tests, die diese Felder
+// brauchen, laufen ab hier nur noch ueber die zwei verbleibenden,
+// unveraendert zyklischen Automaten (kind: 'cyclic').
+const CYCLIC_MACHINES: readonly CyclicMachineConfig[] = [BEAT_LEDGER, CHAMPIONS_LEDGER];
 
 // Stationaere Verteilung einer (ergodischen) Markov-Kette per Power-Iteration
 // -- seit Phase 7d Produktionscode (AttendantEngine.ts::
@@ -115,8 +126,9 @@ describe('machines.config', () => {
             expect(MACHINES.filter((machine) => machine.entryPoint)).toHaveLength(1);
         });
 
-        it('Greed Run ist der einzige Grid-Automat, die anderen drei bleiben zyklisch (Phase 7f)', () => {
+        it('Greed Run ist der einzige Grid-Automat, Trap Tunnels der einzige Tunnelnetz-Automat, die uebrigen zwei bleiben zyklisch (Phase 7f/7i)', () => {
             expect(GREED_RUN.kind).toBe('grid');
+            expect(TRAP_TUNNELS.kind).toBe('trapTunnels');
             for (const machine of CYCLIC_MACHINES) {
                 expect(machine.kind).toBe('cyclic');
             }
@@ -268,6 +280,70 @@ describe('machines.config', () => {
         });
     });
 
+    describe('Trap Tunnels (Tunnelnetz-Fallen-Automat, Phase 7i Genre-Rework)', () => {
+        it('run-Config ist ein 4x4-Raster mit 2 Gegnern und plausiblen Payout-Spannen', () => {
+            expect(TRAP_TUNNELS.run.gridSize).toBe(4);
+            expect(TRAP_TUNNELS.run.enemyCount).toBe(2);
+            expect(TRAP_TUNNELS.run.singleCatchPayoutRange[0]).toBeGreaterThan(0);
+            expect(TRAP_TUNNELS.run.chainCatchPayoutRange[0]).toBeGreaterThan(TRAP_TUNNELS.run.singleCatchPayoutRange[1]);
+        });
+
+        it('Blind-EV-Garantie: eine blind platzierte Falle ist im Erwartungswert positiv (per Simulation, game-spec.md 4.3 PFLICHT)', () => {
+            const ev = computeBlindTrapExpectedValue(TRAP_TUNNELS.run, 3000, Math.random);
+            expect(ev).toBeGreaterThan(0);
+        });
+
+        it('Meilenstein-Schwellen und ticketYieldFactor sind unveraendert aus der bisherigen Config uebernommen (game-spec.md 4.3 Punkt 9)', () => {
+            expect(TRAP_TUNNELS.milestones.map((m) => m.threshold)).toEqual([25, 60, 120]);
+            expect(TRAP_TUNNELS.ticketYieldFactor).toBeCloseTo(0.913, 2);
+        });
+
+        it('hat 3 Vorschau-Reichweite- und 2 Fallenanzahl-Upgrades', () => {
+            expect(TRAP_TUNNELS.trapPreviewRangeUpgrades).toHaveLength(3);
+            expect(TRAP_TUNNELS.trapCountUpgrades).toHaveLength(2);
+        });
+
+        it('beide Leitern haben positive, strikt steigende Basispreise', () => {
+            for (const ladder of [TRAP_TUNNELS.trapPreviewRangeUpgrades, TRAP_TUNNELS.trapCountUpgrades]) {
+                for (let i = 1; i < ladder.length; i += 1) {
+                    expect(ladder[i - 1].cost).toBeGreaterThan(0);
+                    expect(ladder[i].cost).toBeGreaterThan(ladder[i - 1].cost);
+                }
+            }
+        });
+
+        it('getTrapPreviewRange/getTrapCount liefern die Startwerte ohne gekaufte Upgrades', () => {
+            expect(getTrapPreviewRange(TRAP_TUNNELS, [])).toBe(START_TRAP_PREVIEW_RANGE);
+            expect(getTrapCount(TRAP_TUNNELS, [])).toBe(START_TRAP_COUNT);
+        });
+
+        it('getTrapPreviewRange deckelt bei MAX_TRAP_PREVIEW_RANGE (letzte Stufe, deckt sich mit run.pathLength)', () => {
+            const owned = TRAP_TUNNELS.trapPreviewRangeUpgrades.map((u) => u.id);
+            expect(getTrapPreviewRange(TRAP_TUNNELS, owned)).toBe(MAX_TRAP_PREVIEW_RANGE);
+            expect(MAX_TRAP_PREVIEW_RANGE).toBe(TRAP_TUNNELS.run.pathLength);
+        });
+
+        it('getTrapCount deckelt bei MAX_TRAP_COUNT (letzte Stufe)', () => {
+            const owned = TRAP_TUNNELS.trapCountUpgrades.map((u) => u.id);
+            expect(getTrapCount(TRAP_TUNNELS, owned)).toBe(MAX_TRAP_COUNT);
+        });
+
+        it('getTrapTunnelsMachineUpgrade findet ein Upgrade in beiden Leitern', () => {
+            expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.trapPreviewRangeUpgrades[0].id)).toBe(
+                TRAP_TUNNELS.trapPreviewRangeUpgrades[0],
+            );
+            expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.trapCountUpgrades[0].id)).toBe(
+                TRAP_TUNNELS.trapCountUpgrades[0],
+            );
+            expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, 'unbekannt')).toBeUndefined();
+        });
+
+        it('ENEMY_COLORS liefert fuer beide Gegner eine eigene, unterscheidbare Farbe (Barrierefreiheits-Grundsatz)', () => {
+            expect(new Set(ENEMY_COLORS).size).toBe(ENEMY_COLORS.length);
+            expect(ENEMY_COLORS.length).toBeGreaterThanOrEqual(2);
+        });
+    });
+
     describe('buildCyclicActions', () => {
         const states = ['a', 'b', 'c', 'd', 'e'];
         const templates = states.map((s) => ({
@@ -295,7 +371,7 @@ describe('machines.config', () => {
     });
 
     describe('resolveMachineAction', () => {
-        const action = TRAP_TUNNELS.actions[0]; // 'sprengladung': win 'wackelig', loss 'freigelegt'
+        const action = BEAT_LEDGER.actions[0]; // 'grundschlag': win 'treibend', loss 'break'
 
         it('liefert payoutBig am Gewinn-Zustand', () => {
             expect(resolveMachineAction(action, action.counterState)).toEqual({
@@ -312,7 +388,7 @@ describe('machines.config', () => {
         });
 
         it('liefert payoutSimple bei jedem anderen Zustand', () => {
-            const neutralStates = TRAP_TUNNELS.pattern.states.filter(
+            const neutralStates = BEAT_LEDGER.pattern.states.filter(
                 (s) => s !== action.counterState && s !== action.losesToState,
             );
             expect(neutralStates.length).toBe(3);
@@ -369,64 +445,64 @@ describe('machines.config', () => {
 
     describe('getPreviewDepth / getPreviewPrecision', () => {
         it('liefert START_DEPTH/START_PRECISION ohne gekaufte Upgrades', () => {
-            expect(getPreviewDepth(TRAP_TUNNELS, [])).toBe(START_DEPTH);
-            expect(getPreviewPrecision(TRAP_TUNNELS, [])).toBe(START_PRECISION);
+            expect(getPreviewDepth(BEAT_LEDGER, [])).toBe(START_DEPTH);
+            expect(getPreviewPrecision(BEAT_LEDGER, [])).toBe(START_PRECISION);
         });
 
         it('steigt mit dem hoechsten gekauften Upgrade je Achse', () => {
-            const owned = [TRAP_TUNNELS.depthUpgrades[0].id, TRAP_TUNNELS.depthUpgrades[1].id];
-            expect(getPreviewDepth(TRAP_TUNNELS, owned)).toBe(TRAP_TUNNELS.depthUpgrades[1].effect.value);
+            const owned = [BEAT_LEDGER.depthUpgrades[0].id, BEAT_LEDGER.depthUpgrades[1].id];
+            expect(getPreviewDepth(BEAT_LEDGER, owned)).toBe(BEAT_LEDGER.depthUpgrades[1].effect.value);
         });
 
         it('deckelt Praezision bei MAX_PRECISION (letzte Stufe)', () => {
-            const owned = TRAP_TUNNELS.precisionUpgrades.map((u) => u.id);
-            expect(getPreviewPrecision(TRAP_TUNNELS, owned)).toBe(MAX_PRECISION);
+            const owned = BEAT_LEDGER.precisionUpgrades.map((u) => u.id);
+            expect(getPreviewPrecision(BEAT_LEDGER, owned)).toBe(MAX_PRECISION);
         });
 
         it('deckelt Tiefe bei N_STATES (letzte Stufe)', () => {
-            const owned = TRAP_TUNNELS.depthUpgrades.map((u) => u.id);
-            expect(getPreviewDepth(TRAP_TUNNELS, owned)).toBe(N_STATES);
+            const owned = BEAT_LEDGER.depthUpgrades.map((u) => u.id);
+            expect(getPreviewDepth(BEAT_LEDGER, owned)).toBe(N_STATES);
         });
     });
 
     describe('getMachineUpgradeCost (Kreuz-Preis-Kopplung)', () => {
         it('entspricht dem Basispreis ohne gekaufte Upgrades der anderen Achse', () => {
-            const upgrade = TRAP_TUNNELS.depthUpgrades[0];
-            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, [])).toBeCloseTo(upgrade.cost);
+            const upgrade = BEAT_LEDGER.depthUpgrades[0];
+            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, [])).toBeCloseTo(upgrade.cost);
         });
 
         it('steigt multiplikativ mit jeder gekauften Stufe der jeweils anderen Achse', () => {
-            const upgrade = TRAP_TUNNELS.depthUpgrades[0];
-            const oneOtherBought = [TRAP_TUNNELS.precisionUpgrades[0].id];
-            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, oneOtherBought)).toBeCloseTo(
+            const upgrade = BEAT_LEDGER.depthUpgrades[0];
+            const oneOtherBought = [BEAT_LEDGER.precisionUpgrades[0].id];
+            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, oneOtherBought)).toBeCloseTo(
                 upgrade.cost * (1 + CROSS_PRICE_SURCHARGE_K),
             );
-            const twoOtherBought = [TRAP_TUNNELS.precisionUpgrades[0].id, TRAP_TUNNELS.precisionUpgrades[1].id];
-            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, twoOtherBought)).toBeCloseTo(
+            const twoOtherBought = [BEAT_LEDGER.precisionUpgrades[0].id, BEAT_LEDGER.precisionUpgrades[1].id];
+            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, twoOtherBought)).toBeCloseTo(
                 upgrade.cost * (1 + CROSS_PRICE_SURCHARGE_K) ** 2,
             );
         });
 
         it('ignoriert bereits gekaufte Stufen der EIGENEN Achse fuer den Aufschlag', () => {
-            const upgrade = TRAP_TUNNELS.depthUpgrades[1];
-            const ownDepthBought = [TRAP_TUNNELS.depthUpgrades[0].id];
-            expect(getMachineUpgradeCost(TRAP_TUNNELS, upgrade, ownDepthBought)).toBeCloseTo(upgrade.cost);
+            const upgrade = BEAT_LEDGER.depthUpgrades[1];
+            const ownDepthBought = [BEAT_LEDGER.depthUpgrades[0].id];
+            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, ownDepthBought)).toBeCloseTo(upgrade.cost);
         });
     });
 
     describe('getMachineUpgrade', () => {
         it('findet ein Upgrade in der Tiefe-Leiter', () => {
-            expect(getMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.depthUpgrades[0].id)).toBe(TRAP_TUNNELS.depthUpgrades[0]);
+            expect(getMachineUpgrade(BEAT_LEDGER, BEAT_LEDGER.depthUpgrades[0].id)).toBe(BEAT_LEDGER.depthUpgrades[0]);
         });
 
         it('findet ein Upgrade in der Praezisions-Leiter', () => {
-            expect(getMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.precisionUpgrades[0].id)).toBe(
-                TRAP_TUNNELS.precisionUpgrades[0],
+            expect(getMachineUpgrade(BEAT_LEDGER, BEAT_LEDGER.precisionUpgrades[0].id)).toBe(
+                BEAT_LEDGER.precisionUpgrades[0],
             );
         });
 
         it('liefert undefined fuer unbekannte id', () => {
-            expect(getMachineUpgrade(TRAP_TUNNELS, 'unbekannt')).toBeUndefined();
+            expect(getMachineUpgrade(BEAT_LEDGER, 'unbekannt')).toBeUndefined();
         });
     });
 
@@ -518,29 +594,29 @@ describe('machines.config', () => {
 
     describe('getMachineAttendantRate (zyklischer Zweig, unveraendert seit Phase 7d)', () => {
         it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
-            const rate = getMachineAttendantRate(TRAP_TUNNELS, 0, [], 1);
+            const rate = getMachineAttendantRate(BEAT_LEDGER, 0, [], 1);
             expect(rate.machinePointsPerSecond).toBe(0);
             expect(rate.hallTicketsPerSecond).toBe(0);
         });
 
         it('liefert eine positive Rate bei voller Musterkenntnis', () => {
-            const rate = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const rate = getMachineAttendantRate(BEAT_LEDGER, 1, [], 1);
             expect(rate.machinePointsPerSecond).toBeGreaterThan(0);
             expect(rate.hallTicketsPerSecond).toBeGreaterThan(0);
         });
 
         it('hallTicketsPerSecond skaliert mit ticketYieldFactor und dem hallenweiten ticketYieldRate-Parameter', () => {
-            const base = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
-            const doubled = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 2);
+            const base = getMachineAttendantRate(BEAT_LEDGER, 1, [], 1);
+            const doubled = getMachineAttendantRate(BEAT_LEDGER, 1, [], 2);
             expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
         });
 
         it('steigt mit gekauften Vorschau-Upgrades (mehr Tiefe/Praezision fuer den Attendant nutzbar)', () => {
-            const withoutUpgrades = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const withoutUpgrades = getMachineAttendantRate(BEAT_LEDGER, 1, [], 1);
             const withUpgrades = getMachineAttendantRate(
-                TRAP_TUNNELS,
+                BEAT_LEDGER,
                 1,
-                [...TRAP_TUNNELS.depthUpgrades.map((u) => u.id), ...TRAP_TUNNELS.precisionUpgrades.map((u) => u.id)],
+                [...BEAT_LEDGER.depthUpgrades.map((u) => u.id), ...BEAT_LEDGER.precisionUpgrades.map((u) => u.id)],
                 1,
             );
             expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
@@ -572,6 +648,37 @@ describe('machines.config', () => {
                 GREED_RUN,
                 1,
                 GREED_RUN.gridPrecisionUpgrades.map((u) => u.id),
+                1,
+            );
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
+        });
+    });
+
+    describe('getMachineAttendantRate (Trap-Tunnels-Zweig, Phase 7i, dokumentierte Vereinfachung)', () => {
+        it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
+            const rate = getMachineAttendantRate(TRAP_TUNNELS, 0, [], 1);
+            expect(rate.machinePointsPerSecond).toBe(0);
+            expect(rate.hallTicketsPerSecond).toBe(0);
+        });
+
+        it('liefert eine positive Rate bei voller Musterkenntnis', () => {
+            const rate = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            expect(rate.machinePointsPerSecond).toBeGreaterThan(0);
+            expect(rate.hallTicketsPerSecond).toBeGreaterThan(0);
+        });
+
+        it('hallTicketsPerSecond skaliert mit ticketYieldFactor und dem hallenweiten ticketYieldRate-Parameter', () => {
+            const base = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const doubled = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 2);
+            expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
+        });
+
+        it('steigt mit gekaufter Fallenanzahl (mehr Fallen pro Run fuer den Attendant nutzbar)', () => {
+            const withoutUpgrades = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const withUpgrades = getMachineAttendantRate(
+                TRAP_TUNNELS,
+                1,
+                TRAP_TUNNELS.trapCountUpgrades.map((u) => u.id),
                 1,
             );
             expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
