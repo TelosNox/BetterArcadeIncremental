@@ -1,6 +1,7 @@
 import { Boot } from './scenes/Boot';
 import { GreedRunScene } from './scenes/GreedRunScene';
 import { MachineScene } from './scenes/MachineScene';
+import { TrapTunnelsScene } from './scenes/TrapTunnelsScene';
 import { TransitionScene } from './scenes/TransitionScene';
 import { AUTO, Game } from 'phaser';
 
@@ -16,6 +17,7 @@ const config: Phaser.Types.Core.GameConfig = {
         Boot,
         MachineScene,
         GreedRunScene,
+        TrapTunnelsScene,
         TransitionScene
     ]
 };
