@@ -1,19 +1,19 @@
 import type { TrapTunnelsRunConfig } from './types';
 
-// Trap Tunnels (Automat 2, Phase 7i Genre-Rework, game-spec.md 4.3):
-// Tunnelnetz-Fallen-Modell statt zyklisches Pattern. Framework-unabhaengig,
-// kennt weder Phaser noch React noch /src/data (Architektur-Kurzregel
-// CLAUDE.md). Ersetzt PatternEngine/CyclicActionDef fuer Automat 2
-// vollstaendig. Dieselbe Konvention wie GridRunEngine.ts: injizierbarer
-// `rng: () => number = Math.random` fuer deterministische Tests, reine
-// Funktionen wo moeglich, eine zustandsbehaftete Klasse fuer den Zustand
-// EINES laufenden Runs (Netz + feste Gegner-Pfade + Fallen-Platzierung).
+// Trap Tunnels (Automat 2, Phase 7j Kernmodell-Ersatz, game-spec.md 4.3 v2):
+// Zufallsbewegung + Dynamit statt fester Gegner-Pfade + Vorschau-Reichweite
+// (Phase 7i). Framework-unabhaengig, kennt weder Phaser noch React noch
+// /src/data (Architektur-Kurzregel CLAUDE.md). Dieselbe Konvention wie
+// GridRunEngine.ts: injizierbarer `rng: () => number = Math.random` fuer
+// deterministische Tests, reine Funktionen wo moeglich, eine
+// zustandsbehaftete Klasse fuer den Zustand EINES laufenden Runs.
 
 export interface TunnelNetwork {
     gridSize: number;
     junctionCount: number;
     // Kanonische Kanten (a < b), einmal pro Run generiert und danach fest
-    // (game-spec.md 4.3 "pro Run einmalig fest").
+    // (game-spec.md 4.3 "Netz-Generierung pro Run einmalig fest, bevor
+    // Dynamit zum Einsatz kommt").
     edges: readonly (readonly [number, number])[];
     adjacency: readonly (readonly number[])[];
 }
@@ -77,10 +77,12 @@ class UnionFind {
     }
 }
 
-// Netz-Generierung (game-spec.md 4.3 "Tunnelnetz-Generierung"): randomisiertes
+// Netz-Generierung (game-spec.md 4.3 "Netz-Generierung"): randomisiertes
 // Kruskal auf den moeglichen Gitter-Kanten (garantiert einen Spannbaum, also
 // Erreichbarkeit ALLER Kreuzungen), danach 3-4 zusaetzliche zufaellige Kanten
 // aus den uebrig gebliebenen Kandidaten fuer Schleifen/Alternativrouten.
+// Unveraendert aus Phase 7i wiederverwendet (game-spec.md 4.3 "identisch zum
+// bisherigen Generierungsverfahren").
 export function generateNetwork(config: TrapTunnelsRunConfig, rng: () => number = Math.random): TunnelNetwork {
     const { gridSize } = config;
     const junctionCount = gridSize * gridSize;
@@ -129,88 +131,90 @@ export function bfsDistances(network: TunnelNetwork, from: number): number[] {
     return distances;
 }
 
-// Start-Kreuzungen der Gegner mit Mindestabstand (game-spec.md 4.3
-// "Tunnelnetz-Generierung"). Weiche->tatsaechlich harte Korrektur analog zu
-// GridRunEngine.enforceStartNeighborSafety: durchsucht eine zufaellig
-// gemischte Reihenfolge der Kreuzungen nach dem ERSTEN Paar, das die
-// Mindestdistanz einhaelt, faellt sonst auf das am weitesten entfernte
-// gefundene Paar zurueck (Best-Effort, z.B. bei extremen Configs). Nur fuer
-// `count === 2` exakt (die einzige in dieser Version genutzte Groesse,
-// game-spec.md 4.3 "ausdruecklich noch nicht Teil dieser Version: mehr als 2
-// Gegner") -- bei anderen Groessen bewusst vereinfacht (keine kombinatorische
-// Suche ueber mehr als 2 Kreuzungen).
-export function pickEnemyStartJunctions(
-    network: TunnelNetwork,
-    count: number,
-    minDistance: number,
-    rng: () => number = Math.random,
-): number[] {
-    const order = shuffle(
-        Array.from({ length: network.junctionCount }, (_, i) => i),
-        rng,
-    );
-
-    if (count !== 2) {
-        return order.slice(0, count);
-    }
-
-    let bestPair: [number, number] = [order[0], order[1]];
-    let bestDistance = -1;
-    for (let i = 0; i < order.length; i += 1) {
-        const distances = bfsDistances(network, order[i]);
-        for (let j = i + 1; j < order.length; j += 1) {
-            const distance = distances[order[j]];
-            if (distance >= minDistance) {
-                return [order[i], order[j]];
-            }
-            if (distance > bestDistance) {
-                bestDistance = distance;
-                bestPair = [order[i], order[j]];
-            }
-        }
-    }
-    return bestPair;
-}
-
-function edgeKey(a: number, b: number): string {
+export function edgeKey(a: number, b: number): string {
     return a < b ? `${a}-${b}` : `${b}-${a}`;
 }
 
-// Fester Pfad EINES Gegners per Zufalls-Walk (game-spec.md 4.3), nach
-// Moeglichkeit ohne Kantenwiederholung -- an einer Sackgasse (alle
-// Nachbarkanten bereits genutzt) wird eine Kante zwangslaeufig erneut
-// genutzt (Best-Effort, kein Deadlock). `path[0]` ist die Start-Kreuzung
-// (immer bekannt, analog zu Greed Runs Startsektor), `path.length ===
-// length + 1`.
-export function generateEnemyPath(
+// Entfernt die uebergebenen Kanten (Dynamit, game-spec.md 4.3) dauerhaft aus
+// einem Netz -- reine Ableitung, das Original bleibt unveraendert (die
+// Topologie ist immer vollstaendig sichtbar, auch nach dem Sprengen: der
+// Spieler soll sehen, WAS gesprengt wurde, nicht nur das reduzierte Ergebnis).
+export function removeEdges(network: TunnelNetwork, blastedEdges: ReadonlySet<string>): TunnelNetwork {
+    if (blastedEdges.size === 0) return network;
+    const edges = network.edges.filter(([a, b]) => !blastedEdges.has(edgeKey(a, b)));
+    const adjacency: number[][] = Array.from({ length: network.junctionCount }, () => []);
+    for (const [a, b] of edges) {
+        adjacency[a].push(b);
+        adjacency[b].push(a);
+    }
+    return { gridSize: network.gridSize, junctionCount: network.junctionCount, edges, adjacency };
+}
+
+// Start-Kreuzungen der Gegner (game-spec.md 4.3 "Netz-Generierung", Phase 7j):
+// einfach unabhaengig zufaellig aus allen Kreuzungen gezogen, KEIN
+// Mindestabstands-Constraint mehr (entfiel mit der alten, jetzt verworfenen
+// Kettenreaktions-Planbarkeit aus Phase 7i) -- Doppelbelegung derselben
+// Start-Kreuzung durch zwei Gegner ist dabei ausdruecklich moeglich, keine
+// Sonderbehandlung noetig.
+export function pickEnemyStartJunctions(network: TunnelNetwork, count: number, rng: () => number = Math.random): number[] {
+    return Array.from({ length: count }, () => Math.floor(rng() * network.junctionCount));
+}
+
+// Waehlt die naechste Kreuzung EINES Gegners fuer EINEN Ausfuehrungsschritt
+// (game-spec.md 4.3 "Kernidee", Phase 7j): gleichverteilt aus allen Kanten der
+// aktuellen Kreuzung, AUSSER der Kante, ueber die der Gegner gerade gekommen
+// ist (`cameFrom === null` beim allerersten Schritt -- keine Einschraenkung).
+// Keine Option uebrig (Sackgasse oder nur noch die Rueckwaerts-Verbindung) ->
+// `null`, der Aufrufer haelt den Gegner dann fuer den Rest des Runs fest.
+export function pickNextJunction(
     network: TunnelNetwork,
-    start: number,
-    length: number,
+    current: number,
+    cameFrom: number | null,
     rng: () => number = Math.random,
-): number[] {
+): number | null {
+    const neighbors = network.adjacency[current];
+    const options = cameFrom === null ? neighbors : neighbors.filter((n) => n !== cameFrom);
+    if (options.length === 0) return null;
+    return options[Math.floor(rng() * options.length)];
+}
+
+// Loest die komplette Bewegung EINES Gegners ueber `steps`-viele Schritte auf
+// (game-spec.md 4.3 Punkt 1, Phase 7j): live gewuerfelt statt vorab fest
+// generiert, auf dem UEBERGEBENEN (ggf. per Dynamit reduzierten) Netz.
+// `path[0]` ist die Start-Kreuzung, `path.length === steps + 1` IMMER --
+// ein eingefrorener Gegner wiederholt seine letzte Position fuer die
+// restlichen Schritte, damit `resolveTraps` weiterhin mit gleich langen
+// Pfaden aller Gegner arbeiten kann.
+export function resolveEnemyPath(network: TunnelNetwork, start: number, steps: number, rng: () => number = Math.random): number[] {
     const path = [start];
-    const usedEdges = new Set<string>();
     let current = start;
-    for (let step = 0; step < length; step += 1) {
-        const neighbors = network.adjacency[current];
-        if (neighbors.length === 0) break;
-        const unused = neighbors.filter((n) => !usedEdges.has(edgeKey(current, n)));
-        const candidates = unused.length > 0 ? unused : neighbors;
-        const next = candidates[Math.floor(rng() * candidates.length)];
-        usedEdges.add(edgeKey(current, next));
-        path.push(next);
-        current = next;
+    let cameFrom: number | null = null;
+    let frozen = false;
+    for (let step = 0; step < steps; step += 1) {
+        if (!frozen) {
+            const next = pickNextJunction(network, current, cameFrom, rng);
+            if (next === null) {
+                frozen = true;
+            } else {
+                cameFrom = current;
+                current = next;
+            }
+        }
+        path.push(current);
     }
     return path;
 }
 
-// Wie viele Schritte (inkl. der immer bekannten Start-Kreuzung, Index 0)
-// eines Gegner-Pfads bei gegebener Vorschau-Reichweite sichtbar sind
-// (game-spec.md 4.3 "Vorschau-Reichweite") -- bei `previewRange >=
-// path.length - 1` ist der komplette restliche Pfad sichtbar.
-export function getVisiblePathPositions(path: readonly number[], previewRange: number): readonly number[] {
-    const visibleCount = Math.max(1, Math.min(previewRange, path.length - 1) + 1);
-    return path.slice(0, visibleCount);
+// Loest die Bewegung ALLER Gegner ueber `steps`-viele Schritte auf (game-
+// spec.md 4.3 "Rundenstruktur": einmal komplett im Voraus berechnet, die
+// Animation liest danach nur noch ab).
+export function resolveEnemyMovement(
+    network: TunnelNetwork,
+    starts: readonly number[],
+    steps: number,
+    rng: () => number = Math.random,
+): number[][] {
+    return starts.map((start) => resolveEnemyPath(network, start, steps, rng));
 }
 
 export interface TrapEvent {
@@ -226,8 +230,12 @@ export interface TrapEvent {
 // Fallen-Ausloesung (game-spec.md 4.3): fuer jeden Ausfuehrungsschritt wird
 // geprueft, welche Gegner auf einer Falle stehen -- stehen ZWEI Gegner im
 // SELBEN Schritt auf DERSELBEN Falle, ist das EIN Kettenreaktions-Ereignis
-// (nicht zwei Einzelereignisse). Reine Funktion, kennt keine
-// Payout-Mathematik (die lebt in drawTrapEventPayout).
+// (nicht zwei Einzelereignisse). Fallen verbrauchen sich NICHT (game-spec.md
+// 4.3 "Fallen") -- dieselbe Falle kann in unterschiedlichen Schritten
+// beliebig oft erneut ausloesen, auch wiederholt durch denselben
+// eingefrorenen Gegner. Reine Funktion, kennt keine Payout-Mathematik (die
+// lebt in drawTrapEventPayout). Unveraendert aus Phase 7i uebernommen (game-
+// spec.md 4.3 "resolveTraps-Logik bleibt strukturell bestehen").
 export function resolveTraps(paths: readonly (readonly number[])[], trapJunctions: ReadonlySet<number>): TrapEvent[] {
     if (trapJunctions.size === 0) return [];
     const maxSteps = Math.max(...paths.map((p) => p.length));
@@ -266,25 +274,27 @@ export function drawTrapEventPayout(
 }
 
 // Blind-Erwartungswert-Garantie (game-spec.md 4.3 PFLICHT, PER SIMULATION
-// ueber viele Seeds statt einer geschlossenen Formel -- dieselbe Konvention
-// wie GridRunEngine.computeBlindExpectedValue fuer Kategorien-Haeufigkeiten,
-// hier aber ueber die Netz-/Pfad-Zufallsstruktur selbst, die sich nicht
-// geschlossen berechnen laesst): simuliert `trials`-viele komplette Runs,
-// platziert darin je EINE Falle komplett blind (ohne jede genutzte Vorschau)
-// auf eine zufaellige Kreuzung, und mittelt den resultierenden Payout
-// (Erwartungswert der jeweiligen Ereignis-Spanne statt eines gezogenen
-// Zufallswerts, um Rausch-Varianz durch die Payout-Ziehung selbst nicht mit
-// der eigentlich zu pruefenden Netz-/Pfad-Varianz zu vermischen).
+// ueber viele Seeds statt einer geschlossenen Formel, unveraendert aus Phase
+// 7i): simuliert `trials`-viele komplette Runs (Netz-Generierung + live
+// gewuerfelte Bewegung, OHNE Dynamit-Einsatz), platziert darin je EINE Falle
+// komplett blind (ohne jede genutzte Ueberlegung) auf eine zufaellige
+// Kreuzung, und mittelt den resultierenden Payout (Erwartungswert der
+// jeweiligen Ereignis-Spanne statt eines gezogenen Zufallswerts, um
+// Rausch-Varianz durch die Payout-Ziehung selbst nicht mit der eigentlich zu
+// pruefenden Netz-/Bewegungs-Varianz zu vermischen). `enemyCount` ist seit
+// Phase 7j ein separater Parameter (kein Config-Feld mehr, siehe
+// TrapTunnelsRunConfig-Kommentar).
 export function computeBlindTrapExpectedValue(
     config: TrapTunnelsRunConfig,
+    enemyCount: number,
     trials: number,
     rng: () => number = Math.random,
 ): number {
     let total = 0;
     for (let trial = 0; trial < trials; trial += 1) {
         const network = generateNetwork(config, rng);
-        const starts = pickEnemyStartJunctions(network, config.enemyCount, config.minStartDistance, rng);
-        const paths = starts.map((start) => generateEnemyPath(network, start, config.pathLength, rng));
+        const starts = pickEnemyStartJunctions(network, enemyCount, rng);
+        const paths = resolveEnemyMovement(network, starts, config.pathLength, rng);
         const blindJunction = Math.floor(rng() * network.junctionCount);
         const events = resolveTraps(paths, new Set([blindJunction]));
         for (const event of events) {
@@ -294,33 +304,51 @@ export function computeBlindTrapExpectedValue(
     return total / trials;
 }
 
-// Haelt den Zustand EINES laufenden Runs (Netz + feste Gegner-Pfade + aktuell
-// platzierte Fallen) -- bewusst eine Klasse, analog zu GridRunEngine (dieser
-// Automat hat genuin ueber die Planungsphase hinweg mutierenden Zustand: die
-// Fallen-Platzierung). Netz UND Gegner-Pfade sind ab Konstruktion fest
-// (game-spec.md 4.3 "pro Run einmalig fest vorab generiert").
+// Haelt den Zustand EINES laufenden Runs (Netz + Fallen-/Dynamit-Planung) --
+// bewusst eine Klasse, analog zu GridRunEngine (dieser Automat hat genuin
+// ueber die Planungsphase hinweg mutierenden Zustand: Fallen-Platzierung UND
+// seit Phase 7j auch Dynamit-Planung). Das Netz ist ab Konstruktion fest
+// (game-spec.md 4.3 "pro Run einmalig fest vorab generiert, bevor Dynamit
+// zum Einsatz kommt") -- die Gegnerbewegung dagegen wird ERST bei `resolve()`
+// live gewuerfelt, NICHT mehr im Konstruktor (Kernaenderung aus Phase 7j).
 export class TrapTunnelsEngine {
     private readonly network: TunnelNetwork;
-    private readonly enemyPaths: readonly number[][];
+    private readonly config: TrapTunnelsRunConfig;
     private readonly maxTraps: number;
+    private readonly maxDynamite: number;
+    private readonly enemyCount: number;
+    private readonly rng: () => number;
     private readonly placedTraps = new Set<number>();
+    private readonly blastedEdges = new Set<string>();
+    private lastEnemyPaths: readonly (readonly number[])[] = [];
 
-    constructor(config: TrapTunnelsRunConfig, maxTraps: number, rng: () => number = Math.random) {
+    constructor(
+        config: TrapTunnelsRunConfig,
+        maxTraps: number,
+        maxDynamite: number,
+        enemyCount: number,
+        rng: () => number = Math.random,
+    ) {
         if (maxTraps <= 0) {
             throw new RangeError('TrapTunnelsEngine: maxTraps muss positiv sein');
         }
+        if (enemyCount <= 0) {
+            throw new RangeError('TrapTunnelsEngine: enemyCount muss positiv sein');
+        }
         this.network = generateNetwork(config, rng);
-        const starts = pickEnemyStartJunctions(this.network, config.enemyCount, config.minStartDistance, rng);
-        this.enemyPaths = starts.map((start) => generateEnemyPath(this.network, start, config.pathLength, rng));
+        this.config = config;
         this.maxTraps = maxTraps;
+        this.maxDynamite = maxDynamite;
+        this.enemyCount = enemyCount;
+        this.rng = rng;
     }
 
     getNetwork(): TunnelNetwork {
         return this.network;
     }
 
-    getEnemyPaths(): readonly (readonly number[])[] {
-        return this.enemyPaths;
+    getEnemyCount(): number {
+        return this.enemyCount;
     }
 
     getMaxTraps(): number {
@@ -347,11 +375,54 @@ export class TrapTunnelsEngine {
         return this.placedTraps.delete(junction);
     }
 
-    // Loest die Ausfuehrung anhand der final platzierten Fallen auf (game-
-    // spec.md 4.3 "Los loest die Ausfuehrung aus") -- reine Ableitung, keine
-    // Mutation, kann daher auch vor der eigentlichen Animation aufgerufen
-    // werden, um alle Ereignisse im Voraus zu kennen.
+    getMaxDynamite(): number {
+        return this.maxDynamite;
+    }
+
+    getBlastedEdges(): ReadonlySet<string> {
+        return this.blastedEdges;
+    }
+
+    // Ob die Kante (a,b) ueberhaupt existiert UND noch nicht gesprengt wurde
+    // UND das Dynamit-Kontingent noch nicht ausgeschoepft ist (game-spec.md
+    // 4.3 "Dynamit": keinerlei weitere Einschraenkung -- Zonen isolieren oder
+    // Gegner einsperren ist ausdruecklich erlaubt).
+    canBlastEdge(a: number, b: number): boolean {
+        if (!this.network.adjacency[a]?.includes(b)) return false;
+        const key = edgeKey(a, b);
+        if (this.blastedEdges.has(key)) return false;
+        return this.blastedEdges.size < this.maxDynamite;
+    }
+
+    blastEdge(a: number, b: number): boolean {
+        if (!this.canBlastEdge(a, b)) return false;
+        this.blastedEdges.add(edgeKey(a, b));
+        return true;
+    }
+
+    unblastEdge(a: number, b: number): boolean {
+        return this.blastedEdges.delete(edgeKey(a, b));
+    }
+
+    // Die zuletzt bei resolve() live berechneten Gegner-Pfade -- leer, bevor
+    // resolve() zum ersten Mal aufgerufen wurde (es gibt vorher schlicht noch
+    // keine Bewegung, game-spec.md 4.3 Kernaenderung).
+    getLastEnemyPaths(): readonly (readonly number[])[] {
+        return this.lastEnemyPaths;
+    }
+
+    // Loest die Ausfuehrung auf (game-spec.md 4.3 "Rundenstruktur": sprengt
+    // zuerst die gewaehlten Verbindungen, danach wird die Gegnerbewegung
+    // Schritt fuer Schritt live auf dem reduzierten Netz gewuerfelt) -- anders
+    // als in Phase 7i ist das keine reine Ableitung mehr auf bereits
+    // feststehenden Pfaden, sondern wuerfelt bei JEDEM Aufruf neu. Der
+    // Aufrufer ruft das genau EINMAL bei "Los" auf (die Fallen-/Dynamit-
+    // Platzierung steht zu diesem Zeitpunkt fest) und liest Pfade/Ereignisse
+    // danach nur noch ab, um die Animation deterministisch abzuspielen.
     resolve(): TrapEvent[] {
-        return resolveTraps(this.enemyPaths, this.placedTraps);
+        const reducedNetwork = removeEdges(this.network, this.blastedEdges);
+        const starts = pickEnemyStartJunctions(reducedNetwork, this.enemyCount, this.rng);
+        this.lastEnemyPaths = resolveEnemyMovement(reducedNetwork, starts, this.config.pathLength, this.rng);
+        return resolveTraps(this.lastEnemyPaths, this.placedTraps);
     }
 }

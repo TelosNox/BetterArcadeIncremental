@@ -4,10 +4,175 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7i (Trap Tunnels Genre-Rework, siehe unten) — Automat 2 komplett neu als Tunnelnetz-Fallen-Automat gebaut, ersetzt die alte Zyklus-Mechanik vollständig. Implementiert, alle automatisierten Checks grün. **Noch nicht vom Nutzer selbst gespielt/bestätigt.**
-**Läuft/als Nächstes:** Auf Nutzer-Rückmeldung zu Phase 7i warten (Abnahmekriterien siehe Ergebnis-Abschnitt unten), danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7j (Trap Tunnels Kernmodell-Ersatz: Zufallsbewegung + Dynamit, ersetzt die 7i-Fassung mit festen Gegner-Pfaden + Vorschau-Reichweite VOR deren erstem Playtest vollständig) — implementiert, alle automatisierten Checks grün, zusätzlich per Playwright-Skript visuell verifiziert, aber noch nicht vom Nutzer gespielt.
+**Läuft/als Nächstes:** Nutzer-Playtest für 7j abwarten. Danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
 
-## NEUE PHASE 7i: Trap Tunnels Genre-Rework (2026-07-10, mit Nutzer abgestimmt, zweites Experiment)
+## NEUE PHASE 7j: Trap Tunnels Kernmodell-Ersatz — Zufallsbewegung + Dynamit (2026-07-10, mit Nutzer abgestimmt, ersetzt 7i VOR dem ersten Playtest)
+
+Noch bevor Phase 7i (feste Gegner-Pfade + Vorschau-Reichweite) vom Nutzer gespielt wurde, stellte sich in der Spezifikationsdiskussion heraus, dass das Modell bei Maximalausbau der Vorschau (voller restlicher Pfad sichtbar, Fallen nie verbraucht) zu einer reinen Ablese-Übung ohne echte laufende Entscheidung entartet wäre — kein Risiko, keine Varianz, sobald einmal alles aufgedeckt ist. Statt das per Nachbesserung (z. B. Vorschau künstlich deckeln) zu flicken, wird das Kernmodell ersetzt: Gegnerbewegung wird ECHT zufällig und live bei der Ausführung aufgelöst, die Vorschau-Achse entfällt komplett (es gibt nichts mehr zu verbergen), dafür kommt Dynamit als neue Eingriffsmöglichkeit dazu.
+
+Vollständige Spezifikation: `docs/game-spec.md` Abschnitt 4.3 (komplett überschrieben, ersetzt die 7i-Fassung) — hier nur die Zusammenfassung für Claude Code:
+
+1. **Gegnerbewegung live bei Ausführung, nicht mehr vorab fest generiert.** Jeder Gegner wählt an jeder Kreuzung gleichverteilt zufällig eine Verbindung, AUSSER der, über die er gerade gekommen ist (beim ersten Schritt keine Einschränkung). Keine gültige Option → Gegner bleibt für den Rest des Runs stehen. Kreuzungen mit nur einer Weiterverbindung sind dadurch faktisch deterministisch, echte Verzweigungen bleiben unsicher — das ist beabsichtigt, keine Aufdeckungs-Mechanik dafür nötig oder gewünscht.
+2. **Fallen verbrauchen sich NICHT mehr.** Eine platzierte Falle bleibt den ganzen Run aktiv und fängt beliebig viele Gegner, die dort vorbeikommen — Umkehrung der bisherigen Annahme, explizite Nutzer-Entscheidung, damit Gegneranzahl zu einem eigenständigen Skalierungs-Hebel wird statt von Fallenverbrauch überlagert zu werden.
+3. **Neue Ressource Dynamit** (Start 0, per Upgrade freischaltbar): vor der Ausführung bis zu (Dynamitanzahl) bestehende Verbindungen sprengen. Keinerlei Einschränkung — Zonen isolieren oder Gegner ohne Fluchtweg einsperren ist ausdrücklich erlaubte, ggf. optimale Strategie. Auch bei voll ausgebautem Dynamit, das die Gegnerbewegung faktisch komplett determinieren kann, ist das kein zu behebendes Degenerations-Risiko, sondern die gewünschte Power-Fantasie ("den Automaten breaken"), analog zu den anderen drei Automaten bei Volltausbau.
+4. **Vorschau-Reichweiten-Achse entfällt vollständig.** Die Netz-Topologie ist immer komplett sichtbar, es gibt keine verborgene Information mehr, an der eine Vorschau ansetzen könnte.
+5. **Drei Upgrade-Achsen statt zwei:** Fallenanzahl (Start 1, wie bisher), Dynamitanzahl (Start 0, neu), Gegneranzahl (Start ~1, neu — reiner Multiplikator-Hebel auf bereits vorhandene Fallen-/Dynamit-Infrastruktur).
+6. **Kettenreaktion** (zwei Gegner im selben Schritt an derselben Falle = Bonus-Payout) bleibt bestehen, ist aber nur noch seltener Bonus, kein Kernziel mehr — bei echter Zufallsbewegung nicht gezielt planbar wie zuvor.
+7. **Start-Kreuzungen der Gegner:** einfach unabhängig zufällig gezogen, KEINE Mindestabstandsregel mehr (die diente nur der alten, jetzt verworfenen Kettenreaktions-Planbarkeit aus 7i) — Vereinfachung gegenüber 7i, mit Nutzer abgestimmt.
+8. **Blind-EV-Garantie per Simulation** bleibt unverändert Pflicht (ohne Dynamit-Einsatz, wie bisher).
+9. **Netz-Generierung** (4×4-Raster, Spannbaum + Zusatzkanten) bleibt technisch identisch, `generateNetwork` aus 7i wiederverwendbar.
+10. **Payout-Struktur, Rundenstruktur (genau eine Planungs- + Ausführungsphase, "Los" unwiderruflich), Ökonomie-Anbindung, Meilenstein-Schwellen, `ticketYieldFactor`, Architektur (eigene Szene, geteilte Buchhaltung), Barrierefreiheit (Fallen als eigene Form, Gegner Farbe+Buchstabe), Speicherstand-Version-Erhöhung:** alles unverändert aus 7i übernommen, siehe game-spec.md 4.3.
+
+**Architektur-Konsequenz für die Umsetzung:** `TrapTunnelsEngine.ts` muss umgebaut werden — `generateNetwork`/Spannbaum-Logik bleibt, aber die Gegner-Pfad-Generierung wandert aus dem Konstruktor heraus in den `resolve()`-Ausführungsschritt (arbeitet auf dem NACH Dynamit-Einsatz reduzierten Netz), dazu eine neue Methode zum Sprengen von Verbindungen, und Gegneranzahl wird zu einem Laufzeit-Parameter aus den Upgrades statt eines festen Konfigurationswerts. `pickEnemyStartJunctions`s Mindestabstands-Logik aus 7i entfällt (Punkt 7 oben). Die Vorschau-Darstellung in `TrapTunnelsScene.ts` (`getVisiblePathPositions`, Vorschau-Marker) entfällt vollständig, da es keine vorab feststehenden Pfade zum Anzeigen mehr gibt.
+
+**Bewusst NICHT Teil dieser Phase:** Fokus-Wahl-Analogon, größeres/anderes Netz als 4×4, mehr als eine Dynamit-"Sorte" — Backlog, nicht jetzt bauen.
+
+### Ergebnis: Phase 7j umgesetzt (2026-07-10)
+
+Reihenfolge wie in CLAUDE.md gefordert: Engine-Logik zuerst mit Vitest
+abgesichert, danach erst an Phaser angebunden.
+
+**`src/engine/types.ts`:** `CURRENT_SAVE_VERSION` 5 → 6 (Trap Tunnels'
+`trapPreviewRangeUpgrades` entfällt, alte `machineUpgrades['trap-tunnels']`-
+Einträge könnten auf nicht mehr existierende `trap-tunnels-trap-preview-*`-
+ids zeigen — wie immer bewusst KEINE Migration, alte Saves werden beim Laden
+abgelehnt, `SaveSystem.test.ts` um einen Rejection-Test für saveVersion 5
+ergänzt). `TrapTunnelsMachineConfig` verliert `trapPreviewRangeUpgrades`,
+bekommt `dynamiteCountUpgrades`/`enemyCountUpgrades` dazu.
+`TrapTunnelsRunConfig` verliert `enemyCount` (wandert zu einem Konstruktor-/
+Laufzeit-Parameter von `TrapTunnelsEngine`, da jetzt Upgrade-abhängig) und
+`minStartDistance` (entfällt ersatzlos, keine Mindestabstandsregel mehr).
+`MachineUpgradeEffect` verliert die `trapPreviewRange`-Variante, bekommt
+`dynamiteCount`/`enemyCount` dazu (additiv wie die bestehenden Varianten).
+
+**`src/engine/TrapTunnelsEngine.ts`+Test (umgebaut, 49 Tests, vorher 34):**
+`generateNetwork`/`bfsDistances` unverändert wiederverwendet (Spannbaum +
+Zusatzkanten-Generierung bleibt identisch). `pickEnemyStartJunctions`
+verliert seine Mindestabstands-Suche komplett — zieht jetzt einfach
+`count`-viele Kreuzungen unabhängig zufällig (Doppelbelegung durch zwei
+Gegner ausdrücklich möglich). `generateEnemyPath` (kompletter Pfad vorab)
+entfällt, ersetzt durch `pickNextJunction` (eine Kreuzung, eine
+Rückwärts-Kanten-Ausschluss-Regel: `cameFrom === null` beim ersten Schritt
+schließt nichts aus, sonst wird die Rückweg-Kante aus den Optionen gefiltert;
+keine Option übrig → `null`) und `resolveEnemyPath`/`resolveEnemyMovement`
+(würfelt Schritt für Schritt, ein eingefrorener Gegner wiederholt seine
+letzte Position für die restlichen Schritte, damit alle Pfade weiterhin
+gleich lang bleiben). Neue Funktionen `edgeKey`/`removeEdges` für Dynamit:
+`removeEdges` liefert eine reine Ableitung eines reduzierten Netzes (Original
+bleibt unverändert, da die Topologie immer vollständig sichtbar bleiben muss
+— auch was gesprengt wurde). `resolveTraps`/`drawTrapEventPayout` inhaltlich
+unverändert aus 7i übernommen (Fallen verbrauchen sich weiterhin nicht,
+Kettenreaktion bleibt Bonus-Fall). `computeBlindTrapExpectedValue` bekommt
+`enemyCount` als separaten Parameter (kein Config-Feld mehr) und simuliert
+jetzt über `resolveEnemyMovement` statt `generateEnemyPath` — Blind-EV bleibt
+per Simulation über echte `Math.random()`-Trials verifiziert positiv, auch
+mit mehr als 2 Gegnern (per Test). Klasse `TrapTunnelsEngine`: Netz bleibt ab
+Konstruktion fest, Gegnerbewegung wird NICHT mehr im Konstruktor generiert,
+sondern erst bei `resolve()` (sprengt zuerst die geplanten Kanten aus dem
+Original-Netz heraus, würfelt danach live auf dem reduzierten Netz) — neue
+Methoden `blastEdge`/`unblastEdge`/`canBlastEdge`/`getBlastedEdges` (gleiche
+Toggle-Konvention wie `placeTrap`/`removeTrap`), `getLastEnemyPaths()` liefert
+die zuletzt bei `resolve()` gewürfelten Pfade (leer davor). `enemyCount` ist
+jetzt ein Konstruktor-Parameter, wirft `RangeError` bei nicht-positivem Wert
+(analog zu `maxTraps`). Neue Tests decken gezielt die im Prompt geforderten
+Fälle ab: Sackgasse/Rückwärts-Ausschluss beim ersten vs. folgenden Schritten
+(mit einem von Hand gebauten Mini-Netz statt `generateNetwork`, um die
+Grad-Struktur exakt zu kontrollieren), Einfrieren bei fehlender Option,
+gesprengte Kante wird in der Bewegungsauflösung tatsächlich nie mehr benutzt,
+eine Falle fängt mehrfach hintereinander verschiedene UND (bei Einfrieren
+darauf) denselben Gegner ohne sich zu verbrauchen.
+
+**`src/engine/AttendantEngine.ts`+Test (Trap-Tunnels-Zweig umgebaut, Netto
+weiterhin +7 Tests dort):** `getTrapTunnelsBlindExpectedValuePerTrap` nimmt
+jetzt `enemyCount` als Parameter (vorher `run.enemyCount`). Die bisherige
+Interpolation zwischen Blind-EV und Perfekt-Info-EV war an die
+Vorschau-Reichweite gekoppelt — diese Kopplung entfällt ersatzlos (keine
+Vorschau-Achse mehr). Wie im Prompt vorgeschlagen (Ermessen Claude Code)
+skaliert `getTrapTunnelsAttendantExpectedValuePerTrap` jetzt stattdessen nach
+dem vom Attendant nutzbaren DYNAMIT-Kontingent: `getAttendantLookahead`
+(wiederverwendet, dieselbe "wie viel von der eigenen Kapazität nutzt der
+Attendant je nach Musterkenntnis tatsächlich"-Mechanik wie bei den anderen
+drei Automaten) skaliert `dynamiteCount` mit der Musterkenntnis, das Ergebnis
+bestimmt den Interpolationsanteil zwischen Blind-EV und einer weiterhin
+garantiert-einzelfang-basierten Perfekt-Info-EV (weiterhin OHNE echte
+Chain-/Netzwerk-Optimierung, wie schon in 7i, jetzt explizit auch OHNE
+Dynamit-Optimierung — bewusste, dokumentierte Vereinfachung).
+`getTrapTunnelsAttendantMachinePointsRate` bekommt `enemyCount`/
+`dynamiteCount`/`maxDynamiteCount` statt `previewRange`/`maxPreviewRange`.
+
+**`src/data/machines.config.ts`+Test:** `TRAP_TUNNELS_RUN` verliert
+`enemyCount`/`minStartDistance`. `TRAP_TUNNELS.trapPreviewRangeUpgrades`
+entfernt, `dynamiteCountUpgrades` (Start 0, 1→2→3, Kosten 6/14/26) und
+`enemyCountUpgrades` (Start 1, 2→3→4, Kosten 8/18/32) neu — Basispreise
+weiterhin nach demselben Muster wie die bisherigen Leitern kalibriert
+(ähnliche Größenordnung wie Fallenanzahl/Grid-Upgrades, keine
+Kreuz-Preis-Kopplung). Meilenstein-Schwellen (25/60/120) und
+`ticketYieldFactor` (~0.913) unverändert übernommen, wie gefordert.
+`ENEMY_COLORS`/`ENEMY_LABELS` von 2 auf 4 Einträge erweitert (Okabe-Ito-Palette:
+Sky Blue/Orange/Bluish Green/Reddish Purple für Gegner A-D, bewusst ohne
+Vermillion, das den Fallen vorbehalten bleibt) — CLAUDE.md-Barrierefreiheits-
+Grundsatz weiterhin erfüllt (Farbe UND Buchstabe pro Gegner).
+`getMachineAttendantRate`s `trapTunnels`-Zweig ruft jetzt mit
+`enemyCount`/`dynamiteCount`/`MAX_DYNAMITE_COUNT` auf.
+
+**`src/game/scenes/TrapTunnelsScene.ts`:** `getVisiblePathPositions`-Aufruf
+und die komplette Vorschau-Markierung (Planungsphasen-Gegneranzeige mit
+Schritt-Nummer) entfernt — es gibt vor `resolve()` schlicht keine
+Gegnerbewegung, die anzuzeigen wäre (`renderEnemyMarkers` zeigt jetzt nur
+noch während der Ausführungsphase die aktuelle Position, gelesen aus
+`engine.getLastEnemyPaths()`). Neue Dynamit-Interaktion: `drawEdge` zeichnet
+jede Netzkante als klickbares Rechteck zwischen den beiden Kreuzungskreisen
+(nicht als `Line`, um eine verlässliche Klickfläche zu bekommen); im
+Planungszustand interaktiv, wenn die Kante bereits gesprengt ist (zum
+Rückgängigmachen) oder `engine.canBlastEdge()` zutrifft. Gesprengte Kanten
+bekommen zusätzlich zur gedämpften Farbe ein weißes/vermillion-farbenes
+Kreuz-Symbol am Mittelpunkt (CLAUDE.md-Barrierefreiheits-Grundsatz: Farbe
+allein reicht nicht, das Kreuz ist das zweite, farbunabhängige Merkmal) —
+"war nie eine Kante" bleibt dadurch klar von "wurde gesprengt" unterscheidbar,
+wie im Prompt gefordert. `ENEMY_MARKER_OFFSETS` von 2 auf 4 Eck-Positionen
+erweitert (bis zu `MAX_ENEMY_COUNT` gleichzeitig sichtbare Marker an
+derselben Kreuzung). Legende zeigt jetzt immer alle 4 möglichen
+Gegner-Label (A-D) plus die neue Kreuz-Symbol-Erklärung für gesprengte
+Kanten. Upgrade-Shop um eine dritte (`dynamiteCountUpgrades`) und vierte
+(`enemyCountUpgrades`) Leiter erweitert (y=560/620/680, analog zum
+bestehenden Muster). `startNewRun`/`executeRun` lesen `dynamiteCount`/
+`enemyCount` live aus den Upgrades und reichen sie an den
+`TrapTunnelsEngine`-Konstruktor durch; `executeRun` ruft `engine.resolve()`
+jetzt VOR der Schritt-Berechnung auf (löst Dynamit-Sprengung + komplette
+Bewegungsauflösung in einem Aufruf aus) und liest `maxSteps` aus den dabei
+neu berechneten `getLastEnemyPaths()` statt aus vorab feststehenden Pfaden.
+
+**Verifiziert:** `npm test` (**341/341 grün**, vorher 321 nach Phase 7i —
+Zuwachs durch die umgebauten `TrapTunnelsEngine.test.ts`/
+`AttendantEngine.test.ts`-Zweige sowie neue/angepasste Tests in
+`machines.config.test.ts`/`SaveSystem.test.ts`), `npm run lint` sauber,
+`npx tsc --noEmit` sauber, `npm run build-nolog` erfolgreich. Zusätzlich per
+Playwright-Skript gegen `npm run dev-nolog` (Skript + temporäre
+Playwright-Installation danach wieder entfernt, nicht Teil des
+Repos/package.json) mit Screenshots visuell geprüft: vorbereiteter
+Speicherstand (Greed Run durchgespielt, Trap Tunnels mit 3 gekauften
+Upgrades inkl. 1 Dynamit und 3 Gegnern) zeigt korrekt das volle 4×4-Netz,
+Legende mit allen 4 Gegner-Slots und Kreuz-Symbol-Erklärung, drei
+Upgrade-Leitern; Klicks auf zwei Kreuzungen platzieren Fallen (Rauten,
+Status "Fallen 2/2 platziert"), Klick auf eine Kante sprengt sie sichtbar
+(gedämpfte Farbe + weißes Kreuz, Status "Dynamit 1/1 gesprengt"), erneuter
+Klick macht die Sprengung rückgängig und ein dritter Klick sprengt sie
+erneut (Toggle bestätigt); "Los!" löst die Bewegung sichtbar Schritt für
+Schritt auf (3 Gegner A/B/C animiert, 700ms-Delay bestätigt) — Gegner A
+startete auf der gesprengten Kante 0-1 und bewegte sich im Folgeschritt
+ausschließlich über die verbleibende Kante 0-4 (gesprengte Kante nachweislich
+nie benutzt), zwei Einzelfänge im ersten Schritt bestätigen, dass Fallen ohne
+vorherige Bewegung sofort auslösen können und dass unterschiedliche Gegner
+dieselbe bzw. verschiedene Fallen treffen können, ohne dass sich die Falle
+verbraucht; Lauf endete nach Schritt 7 (pathLength 6 + Start), Meilenstein
+"Durchgespielt" korrekt ausgelöst (Punktestand über letzter Schwelle 120),
+danach automatisch neues Netz mit zurückgesetzter Fallen-/Dynamit-Anzeige.
+Keine Konsolenfehler über den gesamten Testlauf. **Noch nicht vom Nutzer
+selbst gespielt/bestätigt** — das ist der nächste Schritt, kein
+automatisierter Ersatz dafür.
+
+## NEUE PHASE 7i: Trap Tunnels Genre-Rework (2026-07-10, mit Nutzer abgestimmt, zweites Experiment) — ERSETZT DURCH PHASE 7J OBEN, NUR NOCH ZU HISTORISCHEN ZWECKEN ERHALTEN
 
 Nach dem erfolgreichen Greed-Run-Umbau (Phase 7f-7h) jetzt Automat 2 ("Trap Tunnels") im selben "von der Genre-Essenz her denken"-Stil, aber bewusst mit einer STRUKTURELL anderen Mechanik als Greed Run — explizite Nutzer-Vorgabe: "das Gleiche in Grün" ist unerwünscht, Ähnlichkeiten sind ok, aber es muss sich anders anfühlen.
 

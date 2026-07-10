@@ -259,95 +259,109 @@ export function getGridAttendantMachinePointsRate(
 }
 
 // --- Trap-Tunnels-Automaten-Ertragsrate (Phase 7i, game-spec.md 4.3, --------
-// STATUS.md Phase 7i Punkt 5) -----------------------------------------------
+// STATUS.md Phase 7i Punkt 5; Phase 7j Kernmodell-Ersatz passt die Formeln an
+// enemyCount/dynamiteCount als Laufzeit-Parameter statt einer Vorschau-
+// Reichweite an) ------------------------------------------------------------
 //
 // Wie beim Grid-Automaten oben passt weder das zyklische Markov-Modell noch
 // die kategorien-basierte Naeherung -- Trap Tunnels hat weder Pattern-
 // Zustaende noch Sektor-Kategorien, sondern ein zufaellig generiertes
-// Tunnelnetz mit festen Gegner-Pfaden (siehe TrapTunnelsEngine.ts).
+// Tunnelnetz mit live gewuerfelter Gegnerbewegung (siehe TrapTunnelsEngine.ts).
 // Game-spec.md 4.3 "Attendant-Automatisierung" erlaubt ausdruecklich eine
-// GROB VEREINFACHTE Platzhalter-Schaetzung OHNE echte Pfad-Optimierung.
+// GROB VEREINFACHTE Platzhalter-Schaetzung OHNE echte Pfad-/Dynamit-
+// Optimierung.
 //
 // Bewusst KEINE Wiederverwendung von TrapTunnelsEngine.computeBlindTrapExpected
-// Value hier: diese Funktion simuliert viele komplette Netz-/Pfad-Runs per
-// Monte-Carlo (das ist ein TEST-Werkzeug fuer die Blind-EV-GARANTIE, siehe
+// Value hier: diese Funktion simuliert viele komplette Netz-/Bewegungs-Runs
+// per Monte-Carlo (das ist ein TEST-Werkzeug fuer die Blind-EV-GARANTIE, siehe
 // TrapTunnelsEngine.test.ts) -- fuer einen bei jedem Tick aufgerufenen
 // Ertragsraten-Pfad waere das viel zu teuer. Stattdessen eine geschlossene
 // Naeherung: jede der (enemyCount * (pathLength+1)) Gegner-Positionen ueber
 // den gesamten Run gilt als unabhaengig GLEICHVERTEILT unter den
 // gridSize*gridSize Kreuzungen (grobe Annahme, ignoriert die tatsaechliche
-// Graph-/Pfadstruktur) -- daraus ergeben sich Treffer-/Kettenwahrscheinlichkeit
-// einer EINZELNEN blind platzierten Falle in geschlossener Form.
-function trapHitProbability(run: TrapTunnelsRunConfig): number {
+// Graph-/Bewegungsstruktur) -- daraus ergeben sich Treffer-/Kettenwahrschein-
+// lichkeit einer EINZELNEN blind platzierten Falle in geschlossener Form.
+// `enemyCount` ist seit Phase 7j ein separater Parameter (Upgrade-Laufzeitwert,
+// kein Config-Feld mehr).
+function trapHitProbability(run: TrapTunnelsRunConfig, enemyCount: number): number {
     const positionsPerEnemy = run.pathLength + 1;
-    const totalPositions = run.enemyCount * positionsPerEnemy;
+    const totalPositions = enemyCount * positionsPerEnemy;
     const junctionCount = run.gridSize * run.gridSize;
     return 1 - (1 - 1 / junctionCount) ** totalPositions;
 }
 
-// Naeherung fuer eine Kettenreaktion: zwei (der aktuell fest enemyCount=2)
-// Gegner muessen im SELBEN Schritt auf derselben Falle stehen -- ueber alle
-// (pathLength+1) Schritte gemittelt. Bei enemyCount < 2 strukturell 0 (keine
-// Kettenreaktion ohne einen zweiten Gegner moeglich).
-function trapChainProbability(run: TrapTunnelsRunConfig): number {
-    if (run.enemyCount < 2) return 0;
+// Naeherung fuer eine Kettenreaktion: zwei Gegner muessen im SELBEN Schritt
+// auf derselben Falle stehen -- ueber alle (pathLength+1) Schritte gemittelt.
+// Bei enemyCount < 2 strukturell 0 (keine Kettenreaktion ohne einen zweiten
+// Gegner moeglich).
+function trapChainProbability(run: TrapTunnelsRunConfig, enemyCount: number): number {
+    if (enemyCount < 2) return 0;
     const positionsPerEnemy = run.pathLength + 1;
     const junctionCount = run.gridSize * run.gridSize;
     return positionsPerEnemy * (1 / junctionCount) * (1 / junctionCount);
 }
 
-// Blind-EV EINER platzierten Falle (Naeherung, siehe Datei-Kommentar oben) --
-// die Kettenwahrscheinlichkeit wird von der Gesamt-Trefferwahrscheinlichkeit
-// abgezogen, damit ein Kettentreffer nicht gleichzeitig als Einzelfang UND
-// als Kette gezaehlt wird.
-export function getTrapTunnelsBlindExpectedValuePerTrap(run: TrapTunnelsRunConfig): number {
-    const chainProbability = trapChainProbability(run);
-    const singleProbability = Math.max(0, trapHitProbability(run) - chainProbability);
+// Blind-EV EINER platzierten Falle (Naeherung, siehe Datei-Kommentar oben,
+// OHNE Dynamit-Einsatz) -- die Kettenwahrscheinlichkeit wird von der Gesamt-
+// Trefferwahrscheinlichkeit abgezogen, damit ein Kettentreffer nicht
+// gleichzeitig als Einzelfang UND als Kette gezaehlt wird.
+export function getTrapTunnelsBlindExpectedValuePerTrap(run: TrapTunnelsRunConfig, enemyCount: number): number {
+    const chainProbability = trapChainProbability(run, enemyCount);
+    const singleProbability = Math.max(0, trapHitProbability(run, enemyCount) - chainProbability);
     return singleProbability * mean(run.singleCatchPayoutRange) + chainProbability * mean(run.chainCatchPayoutRange);
 }
 
-// Perfekt-Info-EV (Naeherung, OHNE echte Pfad-/Kettenplanung, wie in
-// game-spec.md 4.3 gefordert): bei vollstaendig sichtbarem Pfad platziert der
-// Attendant eine Falle direkt auf eine bekannte Gegner-Position -> ein
-// garantierter Einzelfang pro Falle. Keine Chain-Optimierung (das erfordert
-// echtes Koordinieren zweier Gegner-Pfade, explizit ausserhalb der
+// Perfekt-Info-EV (Naeherung, OHNE echte Netzwerk-/Kettenoptimierung, wie in
+// game-spec.md 4.3 gefordert): mit vollstaendig ausgenutztem Dynamit kann der
+// Attendant Gegner effektiv auf eine Falle zwingen -> ein garantierter
+// Einzelfang pro Falle. Keine Chain-Optimierung (das erfordert echtes
+// Koordinieren mehrerer Gegner-Bewegungen, explizit ausserhalb der
 // dokumentierten Vereinfachung).
 function getTrapTunnelsPerfectInfoExpectedValuePerTrap(run: TrapTunnelsRunConfig): number {
     return mean(run.singleCatchPayoutRange);
 }
 
 // EV/Falle, linear interpoliert zwischen Blind-EV und Perfekt-Info-EV,
-// gewichtet mit dem Anteil der genutzten Vorschau-Reichweite -- dieselbe
-// Interpolations-IDEE wie getAttendantExpectedValuePerAction/
-// getGridAttendantExpectedValuePerMove oben, nur mit einer
-// netzwerk-/pfad-basierten Blind-/Perfekt-Info-Definition.
+// gewichtet mit dem Anteil des vom Attendant tatsaechlich genutzten Dynamit-
+// Kontingents (Phase 7j: ersetzt die bisherige Vorschau-Reichweiten-
+// Gewichtung -- es gibt keine Vorschau-Achse mehr, game-spec.md 4.3 "Keine
+// Vorschau-Mechanik"). Dieselbe Interpolations-IDEE wie
+// getAttendantExpectedValuePerAction/getGridAttendantExpectedValuePerMove
+// oben, nur mit einer netzwerk-/dynamit-basierten Blind-/Perfekt-Info-
+// Definition -- weiterhin eine bewusst dokumentierte Vereinfachung ohne
+// echte Pfad-/Netzwerk-Optimierung.
 export function getTrapTunnelsAttendantExpectedValuePerTrap(
     run: TrapTunnelsRunConfig,
-    attendantPreviewRange: number,
-    maxPreviewRange: number,
+    enemyCount: number,
+    attendantDynamiteCount: number,
+    maxDynamiteCount: number,
 ): number {
-    const blindEv = getTrapTunnelsBlindExpectedValuePerTrap(run);
+    const blindEv = getTrapTunnelsBlindExpectedValuePerTrap(run, enemyCount);
     const perfectInfoEv = getTrapTunnelsPerfectInfoExpectedValuePerTrap(run);
-    const precisionFraction = maxPreviewRange > 0 ? clamp01(attendantPreviewRange / maxPreviewRange) : 0;
-    return blindEv + precisionFraction * (perfectInfoEv - blindEv);
+    const controlFraction = maxDynamiteCount > 0 ? clamp01(attendantDynamiteCount / maxDynamiteCount) : 0;
+    return blindEv + controlFraction * (perfectInfoEv - blindEv);
 }
 
 // Vollstaendige Ertragsrate des Trap-Tunnels-Automaten -- Komposition wie
-// getGridAttendantMachinePointsRate oben: Vorschau-Reichweite skaliert mit
-// Musterkenntnis (getAttendantLookahead, wiederverwendet statt dupliziert),
-// EV/Falle * platzierte Fallenanzahl, dann Effizienz + Aktionen/Sekunde. EINE
-// "Aktion" des Attendant entspricht hier einem kompletten Run (Platzierung +
-// Ausfuehrung aller trapCount Fallen) -- game-spec.md 4.3 "Attendant-
-// Automatisierung" fordert kein eigenes Zeitmodell dafuer.
+// getGridAttendantMachinePointsRate oben: nutzbares Dynamit-Kontingent
+// skaliert mit Musterkenntnis (getAttendantLookahead, wiederverwendet statt
+// dupliziert -- derselbe "wie viel von der eigenen Kapazitaet nutzt der
+// Attendant tatsaechlich"-Mechanismus wie bei der Vorschau-Reichweite der
+// anderen Automaten), EV/Falle * platzierte Fallenanzahl, dann Effizienz +
+// Aktionen/Sekunde. EINE "Aktion" des Attendant entspricht hier einem
+// kompletten Run (Dynamit-Einsatz + Platzierung + Ausfuehrung aller trapCount
+// Fallen) -- game-spec.md 4.3 "Attendant-Automatisierung" fordert kein
+// eigenes Zeitmodell dafuer.
 export function getTrapTunnelsAttendantMachinePointsRate(
     run: TrapTunnelsRunConfig,
     knowledge: number,
     trapCount: number,
-    previewRange: number,
-    maxPreviewRange: number,
+    enemyCount: number,
+    dynamiteCount: number,
+    maxDynamiteCount: number,
 ): number {
-    const attendantPreviewRange = getAttendantLookahead(previewRange, knowledge);
-    const evPerTrap = getTrapTunnelsAttendantExpectedValuePerTrap(run, attendantPreviewRange, maxPreviewRange);
+    const attendantDynamiteCount = getAttendantLookahead(dynamiteCount, knowledge);
+    const evPerTrap = getTrapTunnelsAttendantExpectedValuePerTrap(run, enemyCount, attendantDynamiteCount, maxDynamiteCount);
     const efficiency = getAttendantEfficiency(knowledge);
     return Math.max(0, evPerTrap) * trapCount * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
 }

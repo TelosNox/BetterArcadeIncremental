@@ -217,6 +217,33 @@ describe('SaveSystem', () => {
         expect(saveSystem.load()).toBeNull();
     });
 
+    it('load() gibt bei einem Phase-7i-Speicherstand (saveVersion 5, vor dem Trap-Tunnels-Kernmodell-Ersatz) null zurueck', () => {
+        const storage = new MemoryStorage();
+        const phase7iState = {
+            saveVersion: 5,
+            tickets: '100',
+            machinePoints: { 'greed-run': '5', 'trap-tunnels': '3' },
+            machinePeakScore: { 'greed-run': '5', 'trap-tunnels': '3' },
+            unlockedMachines: [],
+            attendantKnowledge: {},
+            hallUpgrades: [],
+            completedMachines: [],
+            // Alte, jetzt bedeutungslose trapPreviewRangeUpgrades-ids fuer
+            // 'trap-tunnels' (Phase 7j entfernt die Vorschau-Achse
+            // vollstaendig zugunsten von Dynamit-/Gegneranzahl-Upgrades) --
+            // genau der Fall, den die fehlende Migration bewusst abfangen
+            // soll (STATUS.md Phase 7j).
+            machineUpgrades: { 'trap-tunnels': ['trap-tunnels-trap-preview-2'] },
+            attendantPools: {},
+            lastAttendantUpdate: Date.now(),
+            gridFocusPreference: {},
+        };
+        storage.setItem('arcade-incremental-save', JSON.stringify(phase7iState));
+        const saveSystem = new SaveSystem(storage);
+
+        expect(saveSystem.load()).toBeNull();
+    });
+
     it('clear() entfernt den gespeicherten Stand', () => {
         const saveSystem = new SaveSystem(new MemoryStorage());
         saveSystem.save(stateWithSomeData());

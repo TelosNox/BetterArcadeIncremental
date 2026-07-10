@@ -21,8 +21,13 @@ import type Decimal from 'break_infinity.js';
 // Automat 2 wechselt von `kind: 'cyclic'` auf `kind: 'trapTunnels'`, alte
 // `machineUpgrades['trap-tunnels']`-Eintraege referenzieren Upgrade-ids, die
 // es nicht mehr gibt -- ebenfalls keine Migration, alte Saves werden
-// abgelehnt statt mit verwaisten Eintraegen weiterzulaufen.
-export const CURRENT_SAVE_VERSION = 5;
+// abgelehnt statt mit verwaisten Eintraegen weiterzulaufen. Phase 7j (Trap
+// Tunnels Kernmodell-Ersatz, game-spec.md 4.3 v2) erhoeht sie erneut auf 6:
+// `trapPreviewRangeUpgrades` entfaellt (die Vorschau-Achse gibt es nicht
+// mehr), alte `machineUpgrades['trap-tunnels']`-Eintraege koennten auf
+// `trap-tunnels-trap-preview-*`-ids zeigen, die es nicht mehr gibt -- erneut
+// keine Migration.
+export const CURRENT_SAVE_VERSION = 6;
 
 // Gemeinsame Felder, die JEDER Automat hat, unabhaengig von seiner
 // Kernmechanik (Phase 7f, game-spec.md 4.2: Greed Run bekommt eine
@@ -75,18 +80,23 @@ export interface GridMachineConfig extends MachineIdentity {
     actionBudgetUpgrades: MachineUpgradeDef[];
 }
 
-// Automat 2 "Trap Tunnels" (Phase 7i, game-spec.md 4.3): Tunnelnetz-Fallen-
-// Modell statt zyklisches Konter-Modell -- ersetzt die urspruengliche
-// CyclicMachineConfig-Belegung von Automat 2 vollstaendig. Nutzt
-// PatternEngine/CyclicActionDef nicht mehr (siehe TrapTunnelsEngine.ts).
+// Automat 2 "Trap Tunnels" (Phase 7i, game-spec.md 4.3, Kernmodell-Ersatz in
+// Phase 7j): Tunnelnetz-Fallen-Modell statt zyklisches Konter-Modell --
+// ersetzt die urspruengliche CyclicMachineConfig-Belegung von Automat 2
+// vollstaendig. Nutzt PatternEngine/CyclicActionDef nicht mehr (siehe
+// TrapTunnelsEngine.ts). Phase 7j entfernt die Vorschau-Achse (es gibt keine
+// verborgene Information mehr, siehe game-spec.md 4.3 "Keine Vorschau-
+// Mechanik") und ersetzt sie durch zwei neue Achsen: Dynamitanzahl (sprengbare
+// Verbindungen pro Run) und Gegneranzahl (reiner Multiplikator-Hebel).
 export interface TrapTunnelsMachineConfig extends MachineIdentity {
     kind: 'trapTunnels';
     run: TrapTunnelsRunConfig;
-    // Zwei UNABHAENGIGE Upgrade-Achsen (game-spec.md 4.3), strukturell analog
+    // Drei UNABHAENGIGE Upgrade-Achsen (game-spec.md 4.3), strukturell analog
     // zu sightRangeUpgrades/actionBudgetUpgrades oben, aber eigener
     // Zahlenbereich (siehe MachineUpgradeEffect unten).
-    trapPreviewRangeUpgrades: MachineUpgradeDef[];
     trapCountUpgrades: MachineUpgradeDef[];
+    dynamiteCountUpgrades: MachineUpgradeDef[];
+    enemyCountUpgrades: MachineUpgradeDef[];
 }
 
 export type MachineConfig = CyclicMachineConfig | GridMachineConfig | TrapTunnelsMachineConfig;
@@ -96,13 +106,14 @@ export type MachineConfig = CyclicMachineConfig | GridMachineConfig | TrapTunnel
 // Bewusst EIN Bundle-Objekt (wie GridSectorConfig oben) statt einzelner
 // Felder direkt auf TrapTunnelsMachineConfig -- TrapTunnelsEngine.ts nimmt
 // dieses Objekt komplett entgegen, dieselbe Konvention wie
-// GridRunEngine(config.grid, ...).
+// GridRunEngine(config.grid, ...). Phase 7j: `enemyCount` wandert von hier in
+// einen Konstruktor-/Laufzeit-Parameter von TrapTunnelsEngine (Upgrade-
+// abhaengig, game-spec.md 4.3 "Gegneranzahl"), `minStartDistance` entfaellt
+// vollstaendig (game-spec.md 4.3 "keine Mindestabstandsregel mehr noetig").
 export interface TrapTunnelsRunConfig {
     gridSize: number; // 4 -- quadratisches Kreuzungs-Raster (4x4 = 16 Kreuzungen)
     extraEdgeRange: [min: number, max: number]; // zusaetzliche Kanten ueber den Spannbaum hinaus (3-4)
-    pathLength: number; // Schritte (Kanten) pro Gegner-Pfad, game-spec.md 4.3: fix, z.B. 6
-    enemyCount: number; // fest 2 in dieser Version (game-spec.md 4.3 "ausdruecklich noch nicht Teil dieser Version")
-    minStartDistance: number; // Mindest-Graphdistanz zwischen den Start-Kreuzungen der Gegner
+    pathLength: number; // Ausfuehrungsschritte pro Run, game-spec.md 4.3: fix, z.B. 6
     singleCatchPayoutRange: [min: number, max: number]; // ein Gegner trifft eine Falle
     chainCatchPayoutRange: [min: number, max: number]; // zwei Gegner treffen im selben Schritt dieselbe Falle
 }
@@ -233,20 +244,20 @@ export interface UpgradeDef {
 // gelten fuer das zyklische Zwei-Achsen-Modell (Automat 2-4), waehrend
 // gridSightRange/gridPrecision/gridActionBudget einen eigenen, unabhaengigen
 // Zahlenbereich haben (siehe machines.config.ts). Phase 7i (game-spec.md 4.3)
-// erweitert um zwei weitere Varianten fuer Trap Tunnels' Upgrade-Achsen --
-// wieder eigene Typen statt Wiederverwendung, da trapPreviewRange (Schritte
-// PRO GEGNER-PFAD, gebunden an dessen fixen Start, nicht an eine
-// Spielerposition -- Lektion aus Phase 7g, siehe game-spec.md 4.3) und
-// trapCount (gleichzeitig platzierbare Fallen) einen eigenen Zahlenbereich
-// haben.
+// erweiterte um trapPreviewRange/trapCount fuer Trap Tunnels' Upgrade-Achsen;
+// Phase 7j (game-spec.md 4.3 v2, Kernmodell-Ersatz) entfernt trapPreviewRange
+// wieder (keine Vorschau-Achse mehr) und ergaenzt dynamiteCount (sprengbare
+// Verbindungen pro Run) und enemyCount (gleichzeitig laufende Gegner) --
+// trapCount (gleichzeitig platzierbare Fallen) bleibt unveraendert.
 export type MachineUpgradeEffect =
     | { type: 'previewDepth'; value: number }
     | { type: 'previewPrecision'; value: number }
     | { type: 'gridSightRange'; value: number }
     | { type: 'gridPrecision'; value: number }
     | { type: 'gridActionBudget'; value: number }
-    | { type: 'trapPreviewRange'; value: number }
-    | { type: 'trapCount'; value: number };
+    | { type: 'trapCount'; value: number }
+    | { type: 'dynamiteCount'; value: number }
+    | { type: 'enemyCount'; value: number };
 
 export interface MachineUpgradeDef {
     id: string;

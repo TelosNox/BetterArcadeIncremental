@@ -1,24 +1,20 @@
 import { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
-import {
-    TrapTunnelsEngine,
-    drawTrapEventPayout,
-    getVisiblePathPositions,
-    junctionRowCol,
-} from '../../engine/TrapTunnelsEngine';
+import { TrapTunnelsEngine, drawTrapEventPayout, edgeKey, junctionRowCol } from '../../engine/TrapTunnelsEngine';
 import { gainKnowledgeFromManualPlay } from '../../engine/AttendantEngine';
 import type { MachineUpgradeDef, TrapTunnelsMachineConfig } from '../../engine/types';
 import {
-    MAX_TRAP_PREVIEW_RANGE,
+    MAX_ENEMY_COUNT,
     TRAP_COLOR,
+    getDynamiteCount,
     getEnemyColor,
+    getEnemyCount,
     getEnemyLabel,
     getEntryPointMachine,
     getMachineAttendantRate,
     getMachineConfig,
     getReachedMilestones,
     getTrapCount,
-    getTrapPreviewRange,
     isFinalMilestoneReached,
 } from '../../data/machines.config';
 import { getTicketYieldRate } from '../../data/hall.config';
@@ -26,10 +22,11 @@ import { economyStore, persist } from '../economy';
 import { getSceneKeyForMachine } from '../sceneRouting';
 import { createMilestonePips, updateMilestonePips } from './milestonePips';
 
-// Eigene Szene fuer Automat 2 "Trap Tunnels" (Phase 7i Genre-Rework, game-
-// spec.md 4.3) -- ersetzt die generische MachineScene.ts VOLLSTAENDIG fuer
-// diesen Automaten (CLAUDE.md "Workflow-Regeln": eigene, genre-spezifische
-// Szene bei strukturell abweichender Mechanik erlaubt). Geteilte Buchhaltung
+// Eigene Szene fuer Automat 2 "Trap Tunnels" (Phase 7i Genre-Rework, Phase 7j
+// Kernmodell-Ersatz: Zufallsbewegung + Dynamit, game-spec.md 4.3 v2) --
+// ersetzt die generische MachineScene.ts VOLLSTAENDIG fuer diesen Automaten
+// (CLAUDE.md "Workflow-Regeln": eigene, genre-spezifische Szene bei
+// strukturell abweichender Mechanik erlaubt). Geteilte Buchhaltung
 // (EconomyStore, SaveSystem, Tickets-/Meilenstein-Anbindung) wird NICHT
 // dupliziert, sondern exakt wie in GreedRunScene.ts ueber economyStore/
 // persist/machines.config.ts angesprochen.
@@ -37,12 +34,18 @@ import { createMilestonePips, updateMilestonePips } from './milestonePips';
 // Rundenstruktur (game-spec.md 4.3 "Rundenstruktur", direkt mit der Lektion
 // aus Phase 7h gebaut, NICHT erst nachtraeglich korrigiert): ein Run besteht
 // aus GENAU EINER Planungsphase (bis zu Fallenanzahl-viele Fallen auf
-// Kreuzungen platzieren, frei wieder entfernbar) + EINER Ausfuehrungsphase
-// (beide Gegner laufen ihren FESTEN Pfad synchron ab). "Los" beendet den Run
-// danach IMMER unwiderruflich -- anders als bei Greed Run gibt es hier gar
-// kein Fokus-Popup/keine "beibehalten"-Checkbox (game-spec.md 4.3 "Kein
-// Fokus-Wahl-Analogon in dieser ersten Version"), also startet direkt nach
-// jeder Ausfuehrung sofort ein neues Netz + neue Pfade, ohne Zwischenschritt.
+// Kreuzungen platzieren, bis zu Dynamitanzahl-viele bestehende Verbindungen
+// sprengen, beides frei wieder rueckgaengig machbar) + EINER Ausfuehrungsphase
+// (alle Gegner laufen live gewuerfelt synchron durchs -- ggf. per Dynamit
+// reduzierte -- Netz). "Los" beendet den Run danach IMMER unwiderruflich --
+// wie bei Greed Run gibt es hier gar kein Fokus-Popup/keine "beibehalten"-
+// Checkbox (game-spec.md 4.3 "Kein Fokus-Wahl-Analogon"), also startet direkt
+// nach jeder Ausfuehrung sofort ein neues Netz, ohne Zwischenschritt.
+//
+// Phase 7j entfernt die Vorschau-Reichweiten-Achse vollstaendig (game-spec.md
+// 4.3 "Keine Vorschau-Mechanik" -- die Netz-Topologie ist immer vollstaendig
+// sichtbar, es gibt aber vor der Ausfuehrung schlicht noch keine Gegner-
+// Bewegung zum Anzeigen, da sie erst live bei resolve() gewuerfelt wird).
 
 type Phase = 'planning' | 'executing';
 
@@ -51,8 +54,13 @@ const STEP_DELAY_MS = 700;
 const JUNCTION_ORIGIN = { x: 110, y: 210 };
 const JUNCTION_SPACING = 100;
 const JUNCTION_RADIUS = 16;
+// Bis zu MAX_ENEMY_COUNT (4) gleichzeitig sichtbare Gegner-Marker an
+// derselben Kreuzung (game-spec.md 4.3 "Gegneranzahl") -- vier Ecken-Offsets
+// statt nur zwei diagonalen Punkten (Phase 7i).
 const ENEMY_MARKER_OFFSETS: readonly { x: number; y: number }[] = [
     { x: -16, y: -16 },
+    { x: 16, y: -16 },
+    { x: -16, y: 16 },
     { x: 16, y: 16 },
 ];
 
@@ -63,8 +71,9 @@ export class TrapTunnelsScene extends Scene {
     private executingStepIndex = -1;
     private maxSteps = 0;
     // Alle Fallen-Ereignisse des laufenden Runs, EINMAL bei "Los" ermittelt
-    // (die Fallen-Platzierung steht zu diesem Zeitpunkt fest) -- die
-    // Animation liest daraus nur noch pro Schritt, ohne erneut aufzuloesen.
+    // (Fallen-/Dynamit-Platzierung steht zu diesem Zeitpunkt fest, danach
+    // wuerfelt engine.resolve() die Gegnerbewegung live) -- die Animation
+    // liest daraus nur noch pro Schritt, ohne erneut aufzuloesen.
     private precomputedEvents: ReturnType<TrapTunnelsEngine['resolve']> = [];
     private feedback = '';
     private milestonesReachedBeforeExecution = 0;
@@ -183,7 +192,8 @@ export class TrapTunnelsScene extends Scene {
 
     // --- Statische Legende (einmalig, game-spec.md 4.3 + CLAUDE.md ---------
     // Barrierefreiheits-Grundsatz: Fallen ueber FORM, Gegner ueber Farbe UND
-    // Buchstabe unterschieden, nie ueber Farbe allein) ----------------------
+    // Buchstabe, gesprengte Verbindungen ueber Farbe UND Kreuz-Symbol
+    // unterschieden, nie ueber Farbe allein) --------------------------------
 
     private renderLegend(): void {
         const x = 640;
@@ -192,19 +202,27 @@ export class TrapTunnelsScene extends Scene {
         y += 26;
 
         this.add.circle(x + 10, y, 8, 0x2c3e50).setStrokeStyle(1, 0x888888);
-        this.add.text(x + 26, y, 'Kreuzung (klickbar)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
+        this.add.text(x + 26, y, 'Kreuzung (klickbar: Falle setzen)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
         y += 26;
 
         this.add.rectangle(x + 10, y, 16, 16, TRAP_COLOR).setAngle(45).setStrokeStyle(1, 0xffffff);
         this.add.text(x + 26, y, 'Platzierte Falle (Form: Raute)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
         y += 26;
 
-        for (let i = 0; i < this.config.run.enemyCount; i += 1) {
+        this.add.rectangle(x + 10, y, 20, 5, 0x555a66).setStrokeStyle(1, 0xd55e00);
+        this.add.text(x + 26, y, 'Gesprengte Verbindung (Kreuz-Symbol, klickbar)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
+        y += 26;
+
+        // Zeigt immer ALLE moeglichen Gegner-Label (A-D), unabhaengig von der
+        // aktuell gekauften Gegneranzahl -- die Legende wird nur einmalig
+        // erzeugt (statisches Element), waehrend die Gegneranzahl per Upgrade
+        // waehrenddessen steigen kann (game-spec.md 4.3 "Gegneranzahl").
+        for (let i = 0; i < MAX_ENEMY_COUNT; i += 1) {
             const label = getEnemyLabel(i);
             this.add.circle(x + 10, y, 8, getEnemyColor(i)).setStrokeStyle(1, 0x000000);
             this.add.text(x + 10, y, label, { fontFamily: 'Arial Black', fontSize: 8, color: '#000000' }).setOrigin(0.5);
             this.add
-                .text(x + 26, y, `Gegner ${label} (Zahl = Schritt-Nr.)`, { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' })
+                .text(x + 26, y, `Gegner ${label} (sichtbar erst waehrend der Ausfuehrung)`, { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' })
                 .setOrigin(0, 0.5);
             y += 26;
         }
@@ -214,22 +232,66 @@ export class TrapTunnelsScene extends Scene {
             fontFamily: 'Arial', fontSize: 12, color: '#cccccc', wordWrap: { width: 320 },
         });
         y += 20;
-        this.add.text(x, y, `Kettenreaktion (2 Gegner, selber Schritt, selbe Falle): ${chainCatchPayoutRange[0]}-${chainCatchPayoutRange[1]} Punkte`, {
+        this.add.text(x, y, `Kettenreaktion (2+ Gegner, selber Schritt, selbe Falle): ${chainCatchPayoutRange[0]}-${chainCatchPayoutRange[1]} Punkte`, {
             fontFamily: 'Arial', fontSize: 12, color: '#cccccc', wordWrap: { width: 320 },
         });
     }
 
     // --- Netz-Darstellung ----------------------------------------------------
 
+    private drawEdge(a: number, b: number, blasted: boolean, interactive: boolean): void {
+        const pa = this.junctionCenter(a);
+        const pb = this.junctionCenter(b);
+        const midX = (pa.x + pb.x) / 2;
+        const midY = (pa.y + pb.y) / 2;
+        const fullDistance = Phaser.Math.Distance.Between(pa.x, pa.y, pb.x, pb.y);
+        const length = Math.max(4, fullDistance - 2 * JUNCTION_RADIUS);
+        const angle = Phaser.Math.Angle.Between(pa.x, pa.y, pb.x, pb.y);
+
+        const bar = this.add
+            .rectangle(midX, midY, length, blasted ? 5 : 3, blasted ? 0x555a66 : 0x444444)
+            .setRotation(angle);
+        this.dynamicObjects.push(bar);
+
+        if (blasted) {
+            // Zweites, farbunabhaengiges Merkmal (CLAUDE.md-Grundsatz): ein
+            // Kreuz-Symbol am Mittelpunkt statt die Kante nur auszublenden
+            // (game-spec.md 4.3 "visuell klar als entfernt/durchgestrichen
+            // markieren, nicht nur ausblenden").
+            const crossSize = 9;
+            const cross1 = this.add
+                .line(0, 0, midX - crossSize, midY - crossSize, midX + crossSize, midY + crossSize, 0xd55e00)
+                .setOrigin(0, 0)
+                .setLineWidth(3);
+            const cross2 = this.add
+                .line(0, 0, midX - crossSize, midY + crossSize, midX + crossSize, midY - crossSize, 0xd55e00)
+                .setOrigin(0, 0)
+                .setLineWidth(3);
+            this.dynamicObjects.push(cross1, cross2);
+        }
+
+        if (interactive) {
+            bar.setInteractive({ useHandCursor: true });
+            bar.on('pointerdown', () => {
+                if (blasted) {
+                    this.engine?.unblastEdge(a, b);
+                } else {
+                    this.engine?.blastEdge(a, b);
+                }
+                this.renderPhase();
+            });
+        }
+    }
+
     private renderNetwork(): void {
         if (!this.engine) return;
         const network = this.engine.getNetwork();
+        const blastedEdges = this.engine.getBlastedEdges();
 
         for (const [a, b] of network.edges) {
-            const pa = this.junctionCenter(a);
-            const pb = this.junctionCenter(b);
-            const line = this.add.line(0, 0, pa.x, pa.y, pb.x, pb.y, 0x444444).setOrigin(0, 0).setLineWidth(2);
-            this.dynamicObjects.push(line);
+            const blasted = blastedEdges.has(edgeKey(a, b));
+            const interactive = this.phase === 'planning' && (blasted || this.engine.canBlastEdge(a, b));
+            this.drawEdge(a, b, blasted, interactive);
         }
 
         const placedTraps = this.engine.getPlacedTraps();
@@ -269,33 +331,22 @@ export class TrapTunnelsScene extends Scene {
         this.dynamicObjects.push(circle, text);
     }
 
-    // Planungsphase: zeigt je Gegner die naechsten (Vorschau-Reichweite)-
-    // vielen Schritte AB DER FESTEN START-KREUZUNG (game-spec.md 4.3 Punkt 3
-    // -- bewusst NICHT an eine sich verschiebende Position gekoppelt, Lektion
-    // aus Phase 7g). Ausfuehrungsphase: zeigt nur die AKTUELLE Position jedes
-    // Gegners im laufenden Schritt (die Wahrheit wird beim Ablaufen ohnehin
-    // vollstaendig sichtbar).
+    // Nur waehrend der Ausfuehrungsphase gibt es ueberhaupt eine Gegner-
+    // Position zu zeigen -- die Bewegung wird erst bei "Los" live gewuerfelt
+    // (game-spec.md 4.3 Kernaenderung, Phase 7j), es gibt daher keine
+    // Planungsphasen-Vorschau mehr (die bisherige getVisiblePathPositions-
+    // Darstellung aus Phase 7i entfaellt vollstaendig).
     private renderEnemyMarkers(): void {
-        if (!this.engine) return;
-        const previewRange = getTrapPreviewRange(this.config, this.getOwnedUpgradeIds());
-        const paths = this.engine.getEnemyPaths();
+        if (!this.engine || this.phase !== 'executing') return;
+        const paths = this.engine.getLastEnemyPaths();
 
         paths.forEach((path, enemyIndex) => {
             const color = getEnemyColor(enemyIndex);
             const label = getEnemyLabel(enemyIndex);
             const offset = ENEMY_MARKER_OFFSETS[enemyIndex % ENEMY_MARKER_OFFSETS.length];
-
-            if (this.phase === 'executing') {
-                const stepIndex = Math.max(0, Math.min(this.executingStepIndex, path.length - 1));
-                const { x, y } = this.junctionCenter(path[stepIndex]);
-                this.drawEnemyMarker(x + offset.x, y + offset.y, color, label);
-            } else {
-                const visible = getVisiblePathPositions(path, previewRange);
-                visible.forEach((junction, stepIndex) => {
-                    const { x, y } = this.junctionCenter(junction);
-                    this.drawEnemyMarker(x + offset.x, y + offset.y, color, `${label}${stepIndex}`);
-                });
-            }
+            const stepIndex = Math.max(0, Math.min(this.executingStepIndex, path.length - 1));
+            const { x, y } = this.junctionCenter(path[stepIndex]);
+            this.drawEnemyMarker(x + offset.x, y + offset.y, color, label);
         });
     }
 
@@ -343,8 +394,9 @@ export class TrapTunnelsScene extends Scene {
 
     private renderUpgradeShop(): void {
         const owned = this.getOwnedUpgradeIds();
-        this.renderUpgradeLadderShop(560, this.config.trapPreviewRangeUpgrades, owned);
-        this.renderUpgradeLadderShop(620, this.config.trapCountUpgrades, owned);
+        this.renderUpgradeLadderShop(560, this.config.trapCountUpgrades, owned);
+        this.renderUpgradeLadderShop(620, this.config.dynamiteCountUpgrades, owned);
+        this.renderUpgradeLadderShop(680, this.config.enemyCountUpgrades, owned);
     }
 
     // --- Statustexte (persistente Objekte, nur Text wird aktualisiert) -----
@@ -355,11 +407,13 @@ export class TrapTunnelsScene extends Scene {
             return;
         }
         const owned = this.getOwnedUpgradeIds();
-        const previewRange = getTrapPreviewRange(this.config, owned);
         const trapCount = getTrapCount(this.config, owned);
-        const placed = this.engine.getPlacedTraps().size;
+        const dynamiteCount = getDynamiteCount(this.config, owned);
+        const enemyCount = getEnemyCount(this.config, owned);
+        const placedTraps = this.engine.getPlacedTraps().size;
+        const blastedEdges = this.engine.getBlastedEdges().size;
         this.statusText.setText(
-            `Vorschau-Reichweite ${previewRange}/${MAX_TRAP_PREVIEW_RANGE} | Fallen ${placed}/${trapCount} platziert`,
+            `Fallen ${placedTraps}/${trapCount} platziert | Dynamit ${blastedEdges}/${dynamiteCount} gesprengt | Gegner: ${enemyCount}`,
         );
     }
 
@@ -374,7 +428,7 @@ export class TrapTunnelsScene extends Scene {
         const ticketYieldRate = getTicketYieldRate(economyStore.getState().hallUpgrades);
         const rate = getMachineAttendantRate(this.config, knowledge, this.getOwnedUpgradeIds(), ticketYieldRate);
         this.attendantStatusText.setText(
-            `Attendant: laeuft im Hintergrund (vereinfachte Schaetzung ohne Pfadplanung) – Musterkenntnis ${knowledgePct}%, ~${rate.machinePointsPerSecond.toFixed(2)} Automaten-Punkte/s, ~${rate.hallTicketsPerSecond.toFixed(2)} Tickets/s`,
+            `Attendant: laeuft im Hintergrund (vereinfachte Schaetzung ohne Netzwerk-/Dynamit-Optimierung) – Musterkenntnis ${knowledgePct}%, ~${rate.machinePointsPerSecond.toFixed(2)} Automaten-Punkte/s, ~${rate.hallTicketsPerSecond.toFixed(2)} Tickets/s`,
         );
     }
 
@@ -407,8 +461,11 @@ export class TrapTunnelsScene extends Scene {
     // --- Run-Lebenszyklus ----------------------------------------------------
 
     private startNewRun(): void {
-        const trapCount = getTrapCount(this.config, this.getOwnedUpgradeIds());
-        this.engine = new TrapTunnelsEngine(this.config.run, trapCount, Math.random);
+        const owned = this.getOwnedUpgradeIds();
+        const trapCount = getTrapCount(this.config, owned);
+        const dynamiteCount = getDynamiteCount(this.config, owned);
+        const enemyCount = getEnemyCount(this.config, owned);
+        this.engine = new TrapTunnelsEngine(this.config.run, trapCount, dynamiteCount, enemyCount, Math.random);
         this.phase = 'planning';
         this.executingStepIndex = -1;
         this.precomputedEvents = [];
@@ -423,8 +480,15 @@ export class TrapTunnelsScene extends Scene {
             this.config,
             economyStore.getMachinePeakScore(this.config.id).toNumber(),
         ).length;
-        this.maxSteps = Math.max(...this.engine.getEnemyPaths().map((path) => path.length));
+
+        // "Los" sprengt (bereits waehrend der Planung uebernommene) Verbindungen
+        // und wuerfelt danach die komplette Gegnerbewegung EINMALIG live aus
+        // (game-spec.md 4.3 "Rundenstruktur", Phase 7j Kernaenderung) -- die
+        // Animation liest pro Schritt nur noch aus precomputedEvents/
+        // getLastEnemyPaths() ab, ohne erneut zu wuerfeln.
         this.precomputedEvents = this.engine.resolve();
+        const paths = this.engine.getLastEnemyPaths();
+        this.maxSteps = paths.length > 0 ? Math.max(...paths.map((path) => path.length)) : 0;
 
         // Musterkenntnis steigt primaer durch manuelles Spielen (game-spec.md
         // 3.2) -- die Anzahl platzierter Fallen ist bei diesem Automaten die
@@ -475,7 +539,7 @@ export class TrapTunnelsScene extends Scene {
     // Rundenstruktur (game-spec.md 4.3, direkt mit der Phase-7h-Lektion
     // gebaut): der Run endet nach der Ausfuehrung IMMER unwiderruflich, es
     // gibt kein Fortfuehren/keine Checkbox -- direkt danach startet immer ein
-    // neues Netz mit neuen Gegner-Pfaden.
+    // neues Netz mit neuen Gegner-Startpunkten.
     private finishExecution(): void {
         if (!this.engine) return;
 

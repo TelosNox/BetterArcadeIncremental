@@ -94,16 +94,21 @@ export function getSectorColor(category: SectorCategory): number {
 }
 
 // Phase 7i (Trap Tunnels Genre-Rework, game-spec.md 4.3): eigene, ebenfalls
-// farbenblind-sichere Palette (Teilmenge Okabe-Ito) fuer die beiden Gegner
-// UND die Fallen -- CLAUDE.md "Barrierefreiheit bei Farbcodierung": Farbe ist
-// nie das einzige Merkmal. Gegner unterscheiden sich zusaetzlich ueber
-// ENEMY_LABELS (Buchstabe A/B), Fallen zusaetzlich ueber ihre FORM (Raute
-// statt Kreis, siehe TrapTunnelsScene.ts) statt nur ueber TRAP_COLOR.
+// farbenblind-sichere Palette (Teilmenge Okabe-Ito) fuer die Gegner UND die
+// Fallen -- CLAUDE.md "Barrierefreiheit bei Farbcodierung": Farbe ist nie das
+// einzige Merkmal. Gegner unterscheiden sich zusaetzlich ueber ENEMY_LABELS
+// (Buchstabe A/B/C/D), Fallen zusaetzlich ueber ihre FORM (Raute statt Kreis,
+// siehe TrapTunnelsScene.ts) statt nur ueber TRAP_COLOR. Phase 7j erweitert
+// beide Listen auf 4 Eintraege (game-spec.md 4.3 "Gegneranzahl Start bei 1,
+// z. B. bis 4") -- Vermillion bleibt bewusst den Fallen vorbehalten (TRAP_COLOR),
+// keine der vier Gegnerfarben verwendet sie erneut.
 export const ENEMY_COLORS: readonly number[] = [
     0x56b4e9, // Sky Blue -- Gegner A
     0xe69f00, // Orange -- Gegner B
+    0x009e73, // Bluish Green -- Gegner C
+    0xcc79a7, // Reddish Purple -- Gegner D
 ];
-export const ENEMY_LABELS: readonly string[] = ['A', 'B'];
+export const ENEMY_LABELS: readonly string[] = ['A', 'B', 'C', 'D'];
 export const TRAP_COLOR = 0xd55e00; // Vermillion -- Fallen (Form: Raute)
 
 export function getEnemyColor(index: number): number {
@@ -392,40 +397,25 @@ export function getGridMachineUpgrade(machine: GridMachineConfig, upgradeId: str
     );
 }
 
-// --- Trap-Tunnels-Automat: zwei unabhaengige Upgrade-Achsen (Phase 7i, -----
-// game-spec.md 4.3 "Zwei unabhaengige Upgrade-Achsen") ----------------------
+// --- Trap-Tunnels-Automat: drei unabhaengige Upgrade-Achsen (Phase 7j -----
+// Kernmodell-Ersatz, game-spec.md 4.3 "Drei unabhaengige Upgrade-Achsen") ---
 //
 // Bewusst KEINE Kreuz-Preis-Kopplung, wie schon beim Grid-Automaten oben --
 // jede Achse hat ihre eigene, unabhaengige Kostenleiter, bezahlt mit den
-// eigenen Automaten-Punkten dieses Automaten.
+// eigenen Automaten-Punkten dieses Automaten. Ersetzt die bisherige
+// trapPreviewRangeUpgrades-Leiter (Phase 7i) vollstaendig -- es gibt keine
+// Vorschau-Achse mehr (game-spec.md 4.3 "Keine Vorschau-Mechanik").
 
-export const START_TRAP_PREVIEW_RANGE = 1;
-// Deckt sich bewusst mit TRAP_TUNNELS.run.pathLength (siehe unten) -- bei
-// voller Stufe ist der komplette restliche Gegner-Pfad sichtbar (game-spec.md
-// 4.3 "Vorschau-Reichweite").
-export const MAX_TRAP_PREVIEW_RANGE = 6;
 export const START_TRAP_COUNT = 1;
 export const MAX_TRAP_COUNT = 3;
+export const START_DYNAMITE_COUNT = 0; // muss erst per Upgrade freigeschaltet werden (game-spec.md 4.3 "Dynamit")
+export const MAX_DYNAMITE_COUNT = 3;
+export const START_ENEMY_COUNT = 1;
+export const MAX_ENEMY_COUNT = 4; // game-spec.md 4.3 "Gegneranzahl (Start bei 1, z. B. bis 4)"
 
-const TRAP_PREVIEW_NUMERALS = ['I', 'II', 'III'];
 const TRAP_COUNT_NUMERALS = ['I', 'II'];
-
-function buildTrapPreviewRangeUpgrades(
-    idPrefix: string,
-    namePrefix: string,
-    values: readonly number[],
-    baseCosts: readonly number[],
-): MachineUpgradeDef[] {
-    return values.map((value, i) => ({
-        id: `${idPrefix}-trap-preview-${value}`,
-        name: `${namePrefix} ${TRAP_PREVIEW_NUMERALS[i]}`,
-        description: `Zeigt die naechsten ${value} Schritte JEDES Gegner-Pfads (statt ${
-            i === 0 ? START_TRAP_PREVIEW_RANGE : values[i - 1]
-        }).`,
-        cost: baseCosts[i],
-        effect: { type: 'trapPreviewRange', value },
-    }));
-}
+const DYNAMITE_COUNT_NUMERALS = ['I', 'II', 'III'];
+const ENEMY_COUNT_NUMERALS = ['I', 'II', 'III'];
 
 function buildTrapCountUpgrades(
     idPrefix: string,
@@ -442,13 +432,36 @@ function buildTrapCountUpgrades(
     }));
 }
 
-export function getTrapPreviewRange(machine: TrapTunnelsMachineConfig, ownedUpgradeIds: readonly string[]): number {
-    return machine.trapPreviewRangeUpgrades.reduce((max, u) => {
-        if (u.effect.type === 'trapPreviewRange' && ownedUpgradeIds.includes(u.id)) {
-            return Math.max(max, u.effect.value);
-        }
-        return max;
-    }, START_TRAP_PREVIEW_RANGE);
+function buildDynamiteCountUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-dynamite-count-${value}`,
+        name: `${namePrefix} ${DYNAMITE_COUNT_NUMERALS[i]}`,
+        description: `Erlaubt das Sprengen von ${value} Verbindungen pro Run (statt ${
+            i === 0 ? START_DYNAMITE_COUNT : values[i - 1]
+        }).`,
+        cost: baseCosts[i],
+        effect: { type: 'dynamiteCount', value },
+    }));
+}
+
+function buildEnemyCountUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-enemy-count-${value}`,
+        name: `${namePrefix} ${ENEMY_COUNT_NUMERALS[i]}`,
+        description: `${value} Gegner laufen gleichzeitig durch das Netz (statt ${i === 0 ? START_ENEMY_COUNT : values[i - 1]}).`,
+        cost: baseCosts[i],
+        effect: { type: 'enemyCount', value },
+    }));
 }
 
 export function getTrapCount(machine: TrapTunnelsMachineConfig, ownedUpgradeIds: readonly string[]): number {
@@ -460,8 +473,28 @@ export function getTrapCount(machine: TrapTunnelsMachineConfig, ownedUpgradeIds:
     }, START_TRAP_COUNT);
 }
 
+export function getDynamiteCount(machine: TrapTunnelsMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.dynamiteCountUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'dynamiteCount' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_DYNAMITE_COUNT);
+}
+
+export function getEnemyCount(machine: TrapTunnelsMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.enemyCountUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'enemyCount' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_ENEMY_COUNT);
+}
+
 export function getTrapTunnelsMachineUpgrade(machine: TrapTunnelsMachineConfig, upgradeId: string): MachineUpgradeDef | undefined {
-    return [...machine.trapPreviewRangeUpgrades, ...machine.trapCountUpgrades].find((upgrade) => upgrade.id === upgradeId);
+    return [...machine.trapCountUpgrades, ...machine.dynamiteCountUpgrades, ...machine.enemyCountUpgrades].find(
+        (upgrade) => upgrade.id === upgradeId,
+    );
 }
 
 // --- Attendant-Ertragsrate (Phase 7d, STATUS.md Teil 2; Phase 7f erweitert
@@ -496,8 +529,9 @@ export function getMachineAttendantRate(
             machine.run,
             knowledge,
             getTrapCount(machine, ownedUpgradeIds),
-            getTrapPreviewRange(machine, ownedUpgradeIds),
-            MAX_TRAP_PREVIEW_RANGE,
+            getEnemyCount(machine, ownedUpgradeIds),
+            getDynamiteCount(machine, ownedUpgradeIds),
+            MAX_DYNAMITE_COUNT,
         );
     } else {
         machinePointsPerSecond = getAttendantMachinePointsRate(
@@ -619,28 +653,29 @@ export const GREED_RUN: GridMachineConfig = {
 
 // ========================================================================
 // "Trap Tunnels" (Automat 2) laut game-spec.md 4.3 (Phase 7i Genre-Rework,
-// 2026-07-10): Tunnelnetz-Fallen-Modell statt zyklisches Konter-Modell.
-// Ersetzt das vorherige 5-Zustands-Zyklus-Modell VOLLSTAENDIG -- nutzt
-// PatternEngine/CyclicActionDef nicht mehr (siehe TrapTunnelsEngine.ts).
-// Meilenstein-Schwellen (25/60/120) und ticketYieldFactor (~0.913, Skalierungs-
-// faktor 1.2 gegenueber Greed Run) UNVERAENDERT aus der bisherigen Config
-// uebernommen (game-spec.md 4.3 Punkt 9) -- nur Zug-/Ausfuehrungslogik und
-// Vorschau sind neu.
+// 2026-07-10; Phase 7j Kernmodell-Ersatz, 2026-07-10): Tunnelnetz-Fallen-
+// Modell mit LIVE gewuerfelter Gegnerbewegung + Dynamit statt fester Gegner-
+// Pfade + Vorschau-Reichweite. Ersetzt das vorherige 5-Zustands-Zyklus-Modell
+// weiterhin vollstaendig -- nutzt PatternEngine/CyclicActionDef nicht mehr
+// (siehe TrapTunnelsEngine.ts). Meilenstein-Schwellen (25/60/120) und
+// ticketYieldFactor (~0.913, Skalierungsfaktor 1.2 gegenueber Greed Run)
+// UNVERAENDERT aus der bisherigen Config uebernommen (game-spec.md 4.3
+// Punkt "Oekonomie-Anbindung, Architektur, Barrierefreiheit, Speicherstand").
 // ========================================================================
 
-// 4x4-Kreuzungs-Raster (16 Kreuzungen), Spannbaum + 3-4 Zusatzkanten,
-// Pfadlaenge 6 pro Gegner (7 Positionen inkl. Start), 2 Gegner mit
-// Mindestabstand 3 (game-spec.md 4.3 "Tunnelnetz-Generierung"). Kein
+// 4x4-Kreuzungs-Raster (16 Kreuzungen), Spannbaum + 3-4 Zusatzkanten, 6
+// Ausfuehrungsschritte pro Run (game-spec.md 4.3 "Netz-Generierung"). Kein
 // negativer Payout-Fall (game-spec.md 4.3 "Payout") -- die Blind-EV-Garantie
 // ist dadurch strukturell erfuellt, solange die Trefferwahrscheinlichkeit > 0
 // ist (per Simulation ueber viele Seeds verifiziert, siehe
-// TrapTunnelsEngine.test.ts).
+// TrapTunnelsEngine.test.ts). `enemyCount` ist seit Phase 7j kein Config-Feld
+// mehr, sondern ein Upgrade-Laufzeit-Parameter (siehe enemyCountUpgrades
+// unten), `minStartDistance` entfaellt vollstaendig (keine Mindestabstands-
+// regel mehr).
 const TRAP_TUNNELS_RUN: TrapTunnelsRunConfig = {
     gridSize: 4,
     extraEdgeRange: [3, 4],
     pathLength: 6,
-    enemyCount: 2,
-    minStartDistance: 3,
     singleCatchPayoutRange: [7, 12],
     chainCatchPayoutRange: [24, 34],
 };
@@ -653,12 +688,16 @@ export const TRAP_TUNNELS: TrapTunnelsMachineConfig = {
     entryPoint: false,
     milestones: [{ threshold: 25 }, { threshold: 60 }, { threshold: 120 }],
     run: TRAP_TUNNELS_RUN,
-    // 3 Vorschau-Reichweite-Stufen (1 -> 2 -> 4 -> 6, letzte Stufe deckt sich
-    // mit run.pathLength) + 2 Fallenanzahl-Stufen (1 -> 2 -> 3) -- Basispreise
-    // = Greed Runs Grid-Upgrade-Basispreise * 1.2 (Skalierungsfaktor),
-    // gerundet, analog zum bisherigen Vorgehen bei den zyklischen Automaten.
-    trapPreviewRangeUpgrades: buildTrapPreviewRangeUpgrades('trap-tunnels', 'Tunnelkarte', [2, 4, 6], [4, 8, 18]),
+    // Drei unabhaengige Upgrade-Leitern (game-spec.md 4.3 "Drei unabhaengige
+    // Upgrade-Achsen") -- Basispreise = Greed Runs Grid-Upgrade-Basispreise *
+    // 1.2 (Skalierungsfaktor), gerundet, analog zum bisherigen Vorgehen bei
+    // den zyklischen Automaten. Fallenanzahl (1 -> 2 -> 3) unveraendert aus
+    // Phase 7i. Dynamitanzahl (0 -> 1 -> 2 -> 3, muss erst freigeschaltet
+    // werden) und Gegneranzahl (1 -> 2 -> 3 -> 4, reiner Multiplikator-Hebel)
+    // sind neu.
     trapCountUpgrades: buildTrapCountUpgrades('trap-tunnels', 'Fallenwerkstatt', [2, 3], [5, 12]),
+    dynamiteCountUpgrades: buildDynamiteCountUpgrades('trap-tunnels', 'Sprengkammer', [1, 2, 3], [6, 14, 26]),
+    enemyCountUpgrades: buildEnemyCountUpgrades('trap-tunnels', 'Gegnerschwarm', [2, 3, 4], [8, 18, 32]),
     ticketYieldFactor: ticketYieldFactorFor(1.2), // ~= 0.913
 };
 

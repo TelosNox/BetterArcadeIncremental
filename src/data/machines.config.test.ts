@@ -8,23 +8,27 @@ import {
     MACHINES,
     MAX_GRID_PRECISION,
     MAX_PRECISION,
+    MAX_DYNAMITE_COUNT,
+    MAX_ENEMY_COUNT,
     MAX_SIGHT_RANGE,
     MAX_TRAP_COUNT,
-    MAX_TRAP_PREVIEW_RANGE,
     N_STATES,
     SECTOR_COLORS,
     START_ACTION_BUDGET,
     START_DEPTH,
+    START_DYNAMITE_COUNT,
+    START_ENEMY_COUNT,
     START_GRID_PRECISION,
     START_PRECISION,
     START_SIGHT_RANGE,
     START_TRAP_COUNT,
-    START_TRAP_PREVIEW_RANGE,
     TRAP_TUNNELS,
     buildCyclicActions,
     computeCandidateExclusionOrder,
     computeInterleavedUpgradeCost,
     getActionBudget,
+    getDynamiteCount,
+    getEnemyCount,
     getEntryPointMachine,
     getExcludedCandidates,
     getFinalMilestoneThreshold,
@@ -41,7 +45,6 @@ import {
     getSightRange,
     getStateColor,
     getTrapCount,
-    getTrapPreviewRange,
     getTrapTunnelsMachineUpgrade,
     getUpgradeCostToMilestoneRatio,
     isFinalMilestoneReached,
@@ -280,31 +283,31 @@ describe('machines.config', () => {
         });
     });
 
-    describe('Trap Tunnels (Tunnelnetz-Fallen-Automat, Phase 7i Genre-Rework)', () => {
-        it('run-Config ist ein 4x4-Raster mit 2 Gegnern und plausiblen Payout-Spannen', () => {
+    describe('Trap Tunnels (Tunnelnetz-Fallen-Automat, Phase 7j Kernmodell-Ersatz: Zufallsbewegung + Dynamit)', () => {
+        it('run-Config ist ein 4x4-Raster mit plausiblen Payout-Spannen', () => {
             expect(TRAP_TUNNELS.run.gridSize).toBe(4);
-            expect(TRAP_TUNNELS.run.enemyCount).toBe(2);
             expect(TRAP_TUNNELS.run.singleCatchPayoutRange[0]).toBeGreaterThan(0);
             expect(TRAP_TUNNELS.run.chainCatchPayoutRange[0]).toBeGreaterThan(TRAP_TUNNELS.run.singleCatchPayoutRange[1]);
         });
 
         it('Blind-EV-Garantie: eine blind platzierte Falle ist im Erwartungswert positiv (per Simulation, game-spec.md 4.3 PFLICHT)', () => {
-            const ev = computeBlindTrapExpectedValue(TRAP_TUNNELS.run, 3000, Math.random);
+            const ev = computeBlindTrapExpectedValue(TRAP_TUNNELS.run, START_ENEMY_COUNT, 3000, Math.random);
             expect(ev).toBeGreaterThan(0);
         });
 
-        it('Meilenstein-Schwellen und ticketYieldFactor sind unveraendert aus der bisherigen Config uebernommen (game-spec.md 4.3 Punkt 9)', () => {
+        it('Meilenstein-Schwellen und ticketYieldFactor sind unveraendert aus der bisherigen Config uebernommen (game-spec.md 4.3)', () => {
             expect(TRAP_TUNNELS.milestones.map((m) => m.threshold)).toEqual([25, 60, 120]);
             expect(TRAP_TUNNELS.ticketYieldFactor).toBeCloseTo(0.913, 2);
         });
 
-        it('hat 3 Vorschau-Reichweite- und 2 Fallenanzahl-Upgrades', () => {
-            expect(TRAP_TUNNELS.trapPreviewRangeUpgrades).toHaveLength(3);
+        it('hat 2 Fallenanzahl-, 3 Dynamitanzahl- und 3 Gegneranzahl-Upgrades', () => {
             expect(TRAP_TUNNELS.trapCountUpgrades).toHaveLength(2);
+            expect(TRAP_TUNNELS.dynamiteCountUpgrades).toHaveLength(3);
+            expect(TRAP_TUNNELS.enemyCountUpgrades).toHaveLength(3);
         });
 
-        it('beide Leitern haben positive, strikt steigende Basispreise', () => {
-            for (const ladder of [TRAP_TUNNELS.trapPreviewRangeUpgrades, TRAP_TUNNELS.trapCountUpgrades]) {
+        it('alle drei Leitern haben positive, strikt steigende Basispreise', () => {
+            for (const ladder of [TRAP_TUNNELS.trapCountUpgrades, TRAP_TUNNELS.dynamiteCountUpgrades, TRAP_TUNNELS.enemyCountUpgrades]) {
                 for (let i = 1; i < ladder.length; i += 1) {
                     expect(ladder[i - 1].cost).toBeGreaterThan(0);
                     expect(ladder[i].cost).toBeGreaterThan(ladder[i - 1].cost);
@@ -312,15 +315,10 @@ describe('machines.config', () => {
             }
         });
 
-        it('getTrapPreviewRange/getTrapCount liefern die Startwerte ohne gekaufte Upgrades', () => {
-            expect(getTrapPreviewRange(TRAP_TUNNELS, [])).toBe(START_TRAP_PREVIEW_RANGE);
+        it('getTrapCount/getDynamiteCount/getEnemyCount liefern die Startwerte ohne gekaufte Upgrades', () => {
             expect(getTrapCount(TRAP_TUNNELS, [])).toBe(START_TRAP_COUNT);
-        });
-
-        it('getTrapPreviewRange deckelt bei MAX_TRAP_PREVIEW_RANGE (letzte Stufe, deckt sich mit run.pathLength)', () => {
-            const owned = TRAP_TUNNELS.trapPreviewRangeUpgrades.map((u) => u.id);
-            expect(getTrapPreviewRange(TRAP_TUNNELS, owned)).toBe(MAX_TRAP_PREVIEW_RANGE);
-            expect(MAX_TRAP_PREVIEW_RANGE).toBe(TRAP_TUNNELS.run.pathLength);
+            expect(getDynamiteCount(TRAP_TUNNELS, [])).toBe(START_DYNAMITE_COUNT);
+            expect(getEnemyCount(TRAP_TUNNELS, [])).toBe(START_ENEMY_COUNT);
         });
 
         it('getTrapCount deckelt bei MAX_TRAP_COUNT (letzte Stufe)', () => {
@@ -328,19 +326,32 @@ describe('machines.config', () => {
             expect(getTrapCount(TRAP_TUNNELS, owned)).toBe(MAX_TRAP_COUNT);
         });
 
-        it('getTrapTunnelsMachineUpgrade findet ein Upgrade in beiden Leitern', () => {
-            expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.trapPreviewRangeUpgrades[0].id)).toBe(
-                TRAP_TUNNELS.trapPreviewRangeUpgrades[0],
-            );
+        it('getDynamiteCount deckelt bei MAX_DYNAMITE_COUNT (letzte Stufe)', () => {
+            const owned = TRAP_TUNNELS.dynamiteCountUpgrades.map((u) => u.id);
+            expect(getDynamiteCount(TRAP_TUNNELS, owned)).toBe(MAX_DYNAMITE_COUNT);
+        });
+
+        it('getEnemyCount deckelt bei MAX_ENEMY_COUNT (letzte Stufe)', () => {
+            const owned = TRAP_TUNNELS.enemyCountUpgrades.map((u) => u.id);
+            expect(getEnemyCount(TRAP_TUNNELS, owned)).toBe(MAX_ENEMY_COUNT);
+        });
+
+        it('getTrapTunnelsMachineUpgrade findet ein Upgrade in allen drei Leitern', () => {
             expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.trapCountUpgrades[0].id)).toBe(
                 TRAP_TUNNELS.trapCountUpgrades[0],
+            );
+            expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.dynamiteCountUpgrades[0].id)).toBe(
+                TRAP_TUNNELS.dynamiteCountUpgrades[0],
+            );
+            expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, TRAP_TUNNELS.enemyCountUpgrades[0].id)).toBe(
+                TRAP_TUNNELS.enemyCountUpgrades[0],
             );
             expect(getTrapTunnelsMachineUpgrade(TRAP_TUNNELS, 'unbekannt')).toBeUndefined();
         });
 
-        it('ENEMY_COLORS liefert fuer beide Gegner eine eigene, unterscheidbare Farbe (Barrierefreiheits-Grundsatz)', () => {
+        it('ENEMY_COLORS liefert fuer bis zu 4 Gegner eine eigene, unterscheidbare Farbe (Barrierefreiheits-Grundsatz)', () => {
             expect(new Set(ENEMY_COLORS).size).toBe(ENEMY_COLORS.length);
-            expect(ENEMY_COLORS.length).toBeGreaterThanOrEqual(2);
+            expect(ENEMY_COLORS.length).toBe(MAX_ENEMY_COUNT);
         });
     });
 
@@ -654,7 +665,7 @@ describe('machines.config', () => {
         });
     });
 
-    describe('getMachineAttendantRate (Trap-Tunnels-Zweig, Phase 7i, dokumentierte Vereinfachung)', () => {
+    describe('getMachineAttendantRate (Trap-Tunnels-Zweig, Phase 7j, dokumentierte Vereinfachung)', () => {
         it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
             const rate = getMachineAttendantRate(TRAP_TUNNELS, 0, [], 1);
             expect(rate.machinePointsPerSecond).toBe(0);
@@ -679,6 +690,28 @@ describe('machines.config', () => {
                 TRAP_TUNNELS,
                 1,
                 TRAP_TUNNELS.trapCountUpgrades.map((u) => u.id),
+                1,
+            );
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
+        });
+
+        it('steigt mit gekaufter Dynamitanzahl bei ausreichender Musterkenntnis (mehr nutzbares Kontingent)', () => {
+            const withoutUpgrades = getMachineAttendantRate(TRAP_TUNNELS, 0.9, [], 1);
+            const withUpgrades = getMachineAttendantRate(
+                TRAP_TUNNELS,
+                0.9,
+                TRAP_TUNNELS.dynamiteCountUpgrades.map((u) => u.id),
+                1,
+            );
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
+        });
+
+        it('steigt mit gekaufter Gegneranzahl (mehr unabhaengige Treffer-Chancen pro Falle)', () => {
+            const withoutUpgrades = getMachineAttendantRate(TRAP_TUNNELS, 1, [], 1);
+            const withUpgrades = getMachineAttendantRate(
+                TRAP_TUNNELS,
+                1,
+                TRAP_TUNNELS.enemyCountUpgrades.map((u) => u.id),
                 1,
             );
             expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
