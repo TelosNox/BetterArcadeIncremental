@@ -41,12 +41,17 @@ import { createMilestonePips, updateMilestonePips } from './milestonePips';
 // exakt wie in MachineScene.ts ueber economyStore/persist/machines.config.ts
 // angesprochen.
 //
-// Rundenstruktur (game-spec.md 4.2 "Rundenstruktur"): eine Planungsrunde kann
-// 1 bis (verbleibendes Aktionsbudget)-viele Zuege umfassen; danach
-// Ausfuehrung/Zusehen/Ergebnis wie bei den anderen Automaten. Ein "Run" endet
-// erst, wenn das GESAMTE Aktionsbudget verbraucht ist (nicht nach jeder
-// Planungsrunde) -- danach startet automatisch ein neuer Run (Checkbox
-// "fuer naechsten Lauf beibehalten") oder das Fokus-Popup erscheint erneut.
+// Rundenstruktur (game-spec.md 4.2 "Rundenstruktur", Phase 7h Korrektur
+// nach Playtest -- ersetzt das urspruengliche Phase-7f-Design "mehrere
+// Planungsrunden bis das Budget erschoepft ist" vollstaendig): ein Run
+// besteht aus GENAU EINER Planungsphase (1 bis zu Aktionsbudget-viele
+// Zuege) + EINER Ausfuehrungsphase. "Los" fuehrt die geplanten Zuege aus
+// UND beendet den Run damit unwiderruflich, egal ob das volle Budget
+// verplant wurde -- nicht genutztes Budget verfaellt ersatzlos, es gibt
+// KEIN Fortfuehren aus der Endposition mit Restbudget mehr. Direkt danach
+// startet immer der naechste Run im Mittelfeld mit frisch generiertem Feld
+// (Checkbox "fuer naechsten Lauf beibehalten" oder erneutes Fokus-Popup,
+// unveraendert aus Phase 7f/7g).
 
 type Phase = 'focus-select' | 'planning' | 'executing';
 
@@ -670,9 +675,16 @@ export class GreedRunScene extends Scene {
 
     // Analog zu MachineScene.finishExecution: keine Bank-/Meilenstein-
     // Entscheidungsbildschirme mehr (Phase 7e gilt automaten-uebergreifend).
-    // Zusaetzlich fuer den Grid-Automaten: sobald das Aktionsbudget des Runs
-    // erschoepft ist, startet entweder direkt ein neuer Run (Checkbox aktiv)
-    // oder das Fokus-Popup erscheint erneut.
+    // Phase 7h (game-spec.md 4.2 "Rundenstruktur", Korrektur nach Playtest):
+    // ein Run besteht aus GENAU EINER Planungs-+Ausfuehrungsphase -- er endet
+    // nach JEDER Ausfuehrung IMMER, unabhaengig vom verbleibenden
+    // Aktionsbudget der GridRunEngine-Instanz (ersetzt die bisherige
+    // Fallunterscheidung "Run laeuft mit Restbudget weiter vs. Run zu Ende").
+    // GridRunEngine.isFinished()/getActionsRemaining() bleiben trotzdem
+    // sinnvoll: getActionsRemaining() begrenzt weiterhin die Planungs-
+    // Warteschlangen-Laenge (canQueueDirection), isFinished() bleibt
+    // unveraendert im Engine-Code fuer den (jetzt strukturell immer
+    // erfuellten) Fall, dass das volle Budget ausgereizt wurde.
     private finishExecution(): void {
         if (!this.runEngine) return;
         this.plannedMoves = [];
@@ -699,19 +711,13 @@ export class GreedRunScene extends Scene {
             this.feedback += isFinal ? ' Durchgespielt! Letzter Meilenstein erreicht.' : ' Meilenstein erreicht!';
         }
 
-        if (this.runEngine.isFinished()) {
-            this.feedback += ' Lauf beendet.';
-            if (this.keepForNextRunChecked) {
-                this.startNewRun(this.focus);
-                return;
-            }
-            this.runEngine = null;
-            this.phase = 'focus-select';
-            this.renderPhase();
+        this.feedback += ' Lauf beendet.';
+        if (this.keepForNextRunChecked) {
+            this.startNewRun(this.focus);
             return;
         }
-
-        this.phase = 'planning';
+        this.runEngine = null;
+        this.phase = 'focus-select';
         this.renderPhase();
     }
 }

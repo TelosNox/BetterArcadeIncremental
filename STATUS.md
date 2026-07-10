@@ -4,8 +4,56 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7g (Greed Run Korrekturen nach Playtest, siehe "Ergebnis"-Abschnitt unten) — Sichtweite jetzt fix am Startsektor verankert statt an der aktuellen Position, Präzisions-Symbole zeigen jetzt die noch möglichen statt der ausgeschlossenen Kategorien. Reine Klarheits-/Verhaltenskorrektur an Phase 7f, keine neuen Mechaniken. `npm test`/`npm run lint`/`npx tsc --noEmit` grün, per Playwright-Smoke-Test gegen den echten Dev-Server visuell verifiziert — **noch nicht vom Nutzer im erneuten Playtest bestätigt**, das ist der nächste Schritt.
-**Läuft/als Nächstes:** Erneuten Playtest der beiden Korrekturen abwarten, erst danach Entscheidung über Trap Tunnels/Beat Ledger/Champion's Ledger im selben Stil. Bekannte, bewusst weiterhin nicht behobene Punkte: (1) Progression/Balance-Tuning bleibt zurückgestellt; (2) Aktionsbudget-Upgrades wirken erst ab dem NÄCHSTEN Lauf (bewusste Vereinfachung, kein Bug). Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7h (Greed Run Rundenstruktur-Korrektur, siehe "Ergebnis"-Abschnitt unten) — ein Run besteht jetzt aus genau EINER Planungs-+Ausführungsphase, "Los" beendet ihn immer, unabhängig vom Restbudget; der nächste Run startet direkt wieder im Mittelfeld. `npm test`/`npm run lint`/`npx tsc --noEmit` grün (Testcount unverändert 273, wie erwartet — reine Scene-Verhaltenskorrektur), per Playwright-Smoke-Test visuell bestätigt (Teil-Plan mit 2 von 4 Zügen ausgeführt → Run endet sofort, neuer Run startet frisch im Zentrum mit vollem Budget) — **noch nicht vom Nutzer im erneuten Playtest bestätigt**.
+**Läuft/als Nächstes:** Erneuten Playtest der Rundenstruktur-Korrektur abwarten, erst danach Entscheidung über Trap Tunnels/Beat Ledger/Champion's Ledger im selben Stil. Bekannte, bewusst weiterhin nicht behobene Punkte: (1) Progression/Balance-Tuning bleibt zurückgestellt; (2) Aktionsbudget-Upgrades wirken erst ab dem NÄCHSTEN Run (unverändert gültig, jetzt sogar konsistenter, da ein Run ohnehin nur noch eine Planungsphase umfasst). Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7h: Greed Run Rundenstruktur-Korrektur (2026-07-10)
+
+Playtest-Feedback: Wenn nicht das volle Aktionsbudget verplant und "Los" gedrückt wird, blieb die Position bisher an der Stelle stehen, an der die Ausführung endete, und eine ZWEITE Planungsphase mit dem Restbudget begann von dort aus (ursprüngliches Phase-7f-Design: ein Run = mehrere Planungsrunden bis das Budget erschöpft ist). Das fühlt sich falsch an — ein Run soll IMMER im Mittelfeld starten.
+
+**Korrigierte Regel (ersetzt den bisherigen "mehrere Planungsrunden pro Run"-Ansatz vollständig, siehe game-spec.md 4.2 "Rundenstruktur"):**
+
+- Ein Run besteht aus GENAU EINER Planungsphase + EINER Ausführungsphase.
+- Spieler plant 1 bis zu (aktuelles Aktionsbudget) Schritte.
+- "Los" führt die geplanten Schritte aus UND beendet damit den Run unwiderruflich — unabhängig davon, ob das volle Aktionsbudget verplant wurde. Nicht genutztes Budget verfällt ersatzlos, es gibt keine Fortführung aus der Endposition.
+- Direkt nach Ausführungsende startet immer der nächste Run im Mittelfeld mit frisch generiertem Feld (Fokus-Popup oder automatischer Neustart je nach "beibehalten"-Checkbox — dieser Teil bleibt unverändert aus Phase 7f/7g).
+- Dadurch entsteht eine zusätzliche echte Entscheidung: früh mit "Los" abbrechen (weniger Risiko, kürzerer Weg ab dem bekannten Zentrum) vs. das volle Aktionsbudget ausreizen (mehr Ertrag, aber tiefer in ungesicherte, evtl. nicht mehr sichtbare Zonen vordringen).
+
+**Technische Konsequenz (Ermessen Claude Code bei der genauen Umsetzung):** In `GreedRunScene.finishExecution()` die bisherige Fallunterscheidung `if (this.runEngine.isFinished())` (Run fortsetzen vs. beenden) entfernen — der Run endet nach `runQueueStep` IMMER, unabhängig vom verbleibenden `actionsRemaining`-Stand der `GridRunEngine`-Instanz. Prüfen, ob `GridRunEngine.isFinished()`/`actionsRemaining` dadurch nur noch die Queue-Längen-Begrenzung während der Planung braucht (Obergrenze für `plannedMoves`), nicht mehr eine "läuft der Run weiter"-Bedingung — ggf. vereinfachen, aber nicht zwingend, falls die bestehende Struktur ohne Verhaltensänderung weiterverwendet werden kann.
+
+**Bewusst NICHT Teil dieser Korrektur:** keine Änderung an Sichtweite/Präzision (Phase 7g bleibt gültig), keine Balance-Änderungen, keine neuen Mechaniken.
+
+### Ergebnis: Phase 7h umgesetzt (2026-07-10)
+
+In `GreedRunScene.finishExecution()` die Fallunterscheidung
+`if (this.runEngine.isFinished())` entfernt — der Run endet jetzt nach
+`runQueueStep` IMMER (Bank/Meilenstein-Check läuft unverändert davor,
+danach direkt Feedback-Ergänzung "Lauf beendet." + entweder
+`startNewRun()` (Checkbox aktiv) oder Fokus-Popup). Der bisherige
+`this.phase = 'planning'`-Fortsetzungspfad (Run mit Restbudget von der
+aktuellen Position weiterlaufen lassen) ist damit vollständig entfallen.
+
+`GridRunEngine.ts`/`AttendantEngine.ts` und ihre Tests bewusst NICHT
+angefasst, wie gefordert: `isFinished()` bleibt Teil der Engine-API (samt
+Test, prüft weiterhin korrekt Budget-Erschöpfung auf Engine-Ebene), wird
+von der Szene nur nicht mehr aufgerufen. `getActionsRemaining()` bleibt
+in `canQueueDirection`/der Statusanzeige unverändert die Obergrenze für
+die Planungs-Warteschlange — da ein Run jetzt strukturell nie mit
+verbrauchtem Teilbudget weiterläuft, entspricht `getActionsRemaining()`
+während der Planungsphase immer exakt dem vollen, aktuell gekauften
+Aktionsbudget.
+
+**Verifiziert:** `npm test` (**273/273 grün, unverändert**, wie erwartet
+bei einer reinen Scene-Verhaltenskorrektur ohne Engine-Änderung),
+`npm run lint` sauber, `npx tsc --noEmit` sauber. Zusätzlich per
+Playwright-Skript gegen `npm run dev-nolog` (Skript + temporäre
+Playwright-Installation danach wieder entfernt) visuell bestätigt: nur 2
+von 4 möglichen Zügen geplant, "Los!" gedrückt — Feedback zeigt "Lauf
+beendet." nach Schritt 2, direkt im Anschluss zeigt die Szene wieder
+"Aktionen 4 verbleibend", die aktuelle Position ist zurück im Mittelfeld,
+die "Bereits besucht"-Markierung des vorherigen Laufs ist verschwunden
+(neues Feld, neuer `GridRunEngine`), keine Konsolenfehler. **Noch nicht
+vom Nutzer selbst erneut gespielt/bestätigt.**
 
 ## NEUE PHASE 7g: Greed Run Korrekturen nach Playtest (2026-07-10)
 
