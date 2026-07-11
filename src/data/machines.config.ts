@@ -1,4 +1,8 @@
 import type {
+    BoostBarrageBoostType,
+    BoostBarrageEnemyType,
+    BoostBarrageMachineConfig,
+    BoostBarrageRunConfig,
     CyclicActionDef,
     CyclicMachineConfig,
     GridMachineConfig,
@@ -15,6 +19,7 @@ import {
     type AttendantRate,
     computeStationaryDistribution,
     getAttendantMachinePointsRate,
+    getBoostBarrageAttendantMachinePointsRate,
     getGridAttendantMachinePointsRate,
     getTrapTunnelsAttendantMachinePointsRate,
 } from '../engine/AttendantEngine';
@@ -117,6 +122,43 @@ export function getEnemyColor(index: number): number {
 
 export function getEnemyLabel(index: number): string {
     return ENEMY_LABELS[((index % ENEMY_LABELS.length) + ENEMY_LABELS.length) % ENEMY_LABELS.length];
+}
+
+// Phase 7m (Boost Barrage Genre-Ersatz, game-spec.md 4.4): eigene, ebenfalls
+// farbenblind-sichere Palette (Teilmenge Okabe-Ito) fuer die drei Gegnertypen
+// UND die vier Boost-Typen -- CLAUDE.md "Barrierefreiheit bei Farbcodierung":
+// Farbe ist nie das einzige Merkmal. BoostBarrageScene.ts koppelt jede Farbe
+// zusaetzlich an eine eigene FORM (Gegner: Kreis/Quadrat/Diamant) bzw. einen
+// Buchstaben (Boosts: Buttons mit Namenstext) als zweites, farbunabhaengiges
+// Merkmal.
+export const ENEMY_TYPE_COLORS: Readonly<Record<BoostBarrageEnemyType, number>> = {
+    scout: 0x56b4e9, // Sky Blue -- haeufigster, zuverlaessig getroffener Typ
+    bomber: 0xe69f00, // Orange -- Warnfarbe fuer die Flaechenangriff-Bedrohung
+    elite: 0xcc79a7, // Reddish Purple -- selten, wertvoll, evasiv
+};
+export const ENEMY_TYPE_LABELS: Readonly<Record<BoostBarrageEnemyType, string>> = {
+    scout: 'S',
+    bomber: 'B',
+    elite: 'E',
+};
+
+export const BOOST_COLORS: Readonly<Record<BoostBarrageBoostType, number>> = {
+    firepower: 0xd55e00, // Vermillion -- Offensive
+    shield: 0x009e73, // Bluish Green -- Verteidigung (anteilig)
+    evade: 0x0072b2, // Blue -- Verteidigung (vollstaendig)
+    focus: 0xf0e442, // Yellow -- Zielerfassung
+};
+
+export function getEnemyTypeColor(type: BoostBarrageEnemyType): number {
+    return ENEMY_TYPE_COLORS[type];
+}
+
+export function getEnemyTypeLabel(type: BoostBarrageEnemyType): string {
+    return ENEMY_TYPE_LABELS[type];
+}
+
+export function getBoostColor(boost: BoostBarrageBoostType): number {
+    return BOOST_COLORS[boost];
 }
 
 // Feste, NICHT kaufbare Normalisierungs-Konstante pro Automat (game-spec.md
@@ -497,6 +539,116 @@ export function getTrapTunnelsMachineUpgrade(machine: TrapTunnelsMachineConfig, 
     );
 }
 
+// --- Boost-Barrage-Automat: drei unabhaengige Upgrade-Achsen (Phase 7m, ----
+// game-spec.md 4.4 "Drei unabhaengige Upgrade-Achsen") ----------------------
+//
+// Bewusst KEINE Kreuz-Preis-Kopplung, wie schon bei Grid-/Trap-Tunnels-
+// Automat oben -- jede Achse hat ihre eigene, unabhaengige Kostenleiter,
+// bezahlt mit den eigenen Automaten-Punkten dieses Automaten. Wichtig
+// (game-spec.md 4.4 "Bewusstes Design-Prinzip"): KEINE dieser drei Achsen
+// erhoeht die Wellenanzahl -- `warningUpgrades` verlaengert nur die reine
+// UI-Timing-Groesse `run.baseWarningMs`, `boostPowerUpgrades`/
+// `chargeUpgrades` werden direkt an den `BoostBarrageEngine`-Konstruktor
+// durchgereicht.
+
+export const START_WARNING_LEVEL = 1;
+export const MAX_WARNING_LEVEL = 3;
+export const START_BOOST_POWER = 1;
+export const MAX_BOOST_POWER = 3;
+export const START_BOOST_CHARGES = 1;
+export const MAX_BOOST_CHARGES = 3;
+
+const WARNING_NUMERALS = ['I', 'II'];
+const BOOST_POWER_NUMERALS = ['I', 'II'];
+const BOOST_CHARGES_NUMERALS = ['I', 'II'];
+
+function buildWarningUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-warning-${value}`,
+        name: `${namePrefix} ${WARNING_NUMERALS[i]}`,
+        description: `Vorwarnzeit vor jeder Gefechts-Aufloesung steigt auf Stufe ${value} (mehr Zeit fuer proaktives statt nur reaktives Boost-Timing).`,
+        cost: baseCosts[i],
+        effect: { type: 'warningWindow', value },
+    }));
+}
+
+function buildBoostPowerUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-boost-power-${value}`,
+        name: `${namePrefix} ${BOOST_POWER_NUMERALS[i]}`,
+        description: `Wirkung aller vier Boosts pro Aktivierung steigt auf Stufe ${value} (gleichbleibende Wellenanzahl/Aktivierungsmoeglichkeiten).`,
+        cost: baseCosts[i],
+        effect: { type: 'boostPower', value },
+    }));
+}
+
+function buildChargeUpgrades(
+    idPrefix: string,
+    namePrefix: string,
+    values: readonly number[],
+    baseCosts: readonly number[],
+): MachineUpgradeDef[] {
+    return values.map((value, i) => ({
+        id: `${idPrefix}-boost-charges-${value}`,
+        name: `${namePrefix} ${BOOST_CHARGES_NUMERALS[i]}`,
+        description: `Jeder der vier Boosts hat ${value} Ladungen pro Welle (statt ${i === 0 ? START_BOOST_CHARGES : values[i - 1]}).`,
+        cost: baseCosts[i],
+        effect: { type: 'boostCharges', value },
+    }));
+}
+
+export function getWarningLevel(machine: BoostBarrageMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.warningUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'warningWindow' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_WARNING_LEVEL);
+}
+
+// Reine Ableitung aus der Vorwarnzeit-STUFE (nicht direkt gespeichert) --
+// `run.baseWarningMs`/`run.warningMsPerLevel` sind die eigentliche
+// Zahlenbalance (machines.config.ts-Ebene), die Stufe selbst kommt aus der
+// Upgrade-Leiter wie bei den anderen Automaten.
+export function getWarningWindowMs(machine: BoostBarrageMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    const level = getWarningLevel(machine, ownedUpgradeIds);
+    return machine.run.baseWarningMs + (level - START_WARNING_LEVEL) * machine.run.warningMsPerLevel;
+}
+
+export function getBoostPowerLevel(machine: BoostBarrageMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.boostPowerUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'boostPower' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_BOOST_POWER);
+}
+
+export function getMaxBoostCharges(machine: BoostBarrageMachineConfig, ownedUpgradeIds: readonly string[]): number {
+    return machine.chargeUpgrades.reduce((max, u) => {
+        if (u.effect.type === 'boostCharges' && ownedUpgradeIds.includes(u.id)) {
+            return Math.max(max, u.effect.value);
+        }
+        return max;
+    }, START_BOOST_CHARGES);
+}
+
+export function getBoostBarrageMachineUpgrade(machine: BoostBarrageMachineConfig, upgradeId: string): MachineUpgradeDef | undefined {
+    return [...machine.warningUpgrades, ...machine.boostPowerUpgrades, ...machine.chargeUpgrades].find(
+        (upgrade) => upgrade.id === upgradeId,
+    );
+}
+
 // --- Attendant-Ertragsrate (Phase 7d, STATUS.md Teil 2; Phase 7f erweitert
 // um den Grid-Automaten-Zweig, Phase 7i um den Trap-Tunnels-Zweig) --------
 //
@@ -532,6 +684,13 @@ export function getMachineAttendantRate(
             getEnemyCount(machine, ownedUpgradeIds),
             getDynamiteCount(machine, ownedUpgradeIds),
             MAX_DYNAMITE_COUNT,
+        );
+    } else if (machine.kind === 'boostBarrage') {
+        machinePointsPerSecond = getBoostBarrageAttendantMachinePointsRate(
+            machine.run,
+            knowledge,
+            getBoostPowerLevel(machine, ownedUpgradeIds),
+            getMaxBoostCharges(machine, ownedUpgradeIds),
         );
     } else {
         machinePointsPerSecond = getAttendantMachinePointsRate(
@@ -641,8 +800,8 @@ export const GREED_RUN: GridMachineConfig = {
     theme: 'pacman-twist',
     entryPoint: true,
     // Meilensteine UNVERAENDERT gegenueber dem alten Zyklus-Modell (bleiben
-    // die Skalierungs-Basis fuer Trap Tunnels/Beat Ledger/Champion's Ledger,
-    // siehe deren ticketYieldFactor-Kommentare unten).
+    // die Skalierungs-Basis fuer Trap Tunnels/Boost Barrage/Champion's
+    // Ledger, siehe deren ticketYieldFactor-Kommentare unten).
     milestones: [{ threshold: 20 }, { threshold: 50 }, { threshold: 100 }],
     grid: GREED_RUN_GRID,
     sightRangeUpgrades: buildSightRangeUpgrades('greed-run', 'Weitblick', [2, 3, 4], [3, 7, 15]),
@@ -702,47 +861,58 @@ export const TRAP_TUNNELS: TrapTunnelsMachineConfig = {
 };
 
 // ========================================================================
-// "Beat Ledger" (Automat 3) laut game-spec.md 4.4: DDR/Whac-a-Mole-Twist.
-// Skalierungsfaktor gegenueber Greed Run: 140/100 = 1.4.
+// "Boost Barrage" (Automat 3) laut game-spec.md 4.4: Autopilot-Space-Shooter-
+// Twist (Phase 7m, ersetzt den verworfenen "Beat Ledger"/DDR-Ansatz VOLL-
+// STAENDIG -- kein Rhythmusspiel ohne lizenzfreie Musik, siehe game-spec.md
+// 4.4 "Verworfene Vorgaenger-Ideen"). Skalierungsfaktor gegenueber Greed Run:
+// 140/100 = 1.4 (unveraendert aus der bisherigen Meilenstein-Groessenordnung
+// uebernommen).
 // ========================================================================
 
-const BEAT_LEDGER_STATES = ['ruhig', 'treibend', 'doppelschlag', 'synkope', 'break'];
+// 6 Gegner pro Welle, Scout dominiert deutlich (65%), Bomber/Elite selten
+// (20%/15%) -- game-spec.md 4.4 "Scout ... traegt allein schon die Blind-
+// Erwartungswert-Garantie". Blind-EV/Welle liegt (per Simulation in
+// machines.config.test.ts verifiziert) klar im positiven Bereich, getragen
+// von den zuverlaessig getroffenen Scouts.
+const BOOST_BARRAGE_RUN: BoostBarrageRunConfig = {
+    waveCount: 5, // fest, NICHT upgradebar (game-spec.md 4.4 "Bewusstes Design-Prinzip")
+    enemiesPerWave: 6,
+    enemyWeights: { scout: 65, bomber: 20, elite: 15 },
+    scoutPayoutRange: [3, 5],
+    bomberDestroyPayoutRange: [10, 16],
+    bomberHitCostRange: [8, 14],
+    elitePayoutRange: [18, 26],
+    baseBomberDestroyChance: 0.55,
+    baseEliteHitChance: 0.3,
+    escalationPerDestroyed: 0.03,
+    firepowerDestroyBonusPerLevel: 0.2,
+    firepowerScoutBonusPerLevel: 1,
+    shieldDamageReductionPerLevel: 0.3,
+    focusHitBonusPerLevel: 0.25,
+    evadeDurationBaseSteps: 1,
+    evadeDurationPerExtraLevel: 1,
+    baseWarningMs: 1500,
+    warningMsPerLevel: 750,
+};
 
-const BEAT_LEDGER_ACTIONS = buildCyclicActions(BEAT_LEDGER_STATES, [
-    { id: 'grundschlag', payoutBig: [26, 36], payoutSimple: [8, 13], payoutLoss: [-15, -10] },
-    { id: 'doppelkombo', payoutBig: [26, 36], payoutSimple: [8, 13], payoutLoss: [-15, -10] },
-    { id: 'synkopenkombo', payoutBig: [26, 36], payoutSimple: [8, 13], payoutLoss: [-15, -10] },
-    { id: 'breakbeat', payoutBig: [26, 36], payoutSimple: [8, 13], payoutLoss: [-15, -10] },
-    { id: 'standakkord', payoutBig: [26, 36], payoutSimple: [8, 13], payoutLoss: [-15, -10] },
-]);
-
-// Blind-EV-Garantie: stationaere Verteilung ruhig ~21.3%, treibend ~20.3%,
-// doppelschlag ~18.8%, synkope ~19.7%, break ~19.8%. Blind-EV zwischen
-// ~9.46 (b2/doppelkombo) und ~10.33 (b5/standakkord), Verhaeltnis ~1.09.
-export const BEAT_LEDGER: CyclicMachineConfig = {
-    kind: 'cyclic',
-    id: 'beat-ledger',
-    name: 'Beat Ledger',
-    theme: 'ddr-twist',
+export const BOOST_BARRAGE: BoostBarrageMachineConfig = {
+    kind: 'boostBarrage',
+    id: 'boost-barrage',
+    name: 'Boost Barrage',
+    theme: 'space-shooter-twist',
     entryPoint: false,
-    pattern: {
-        states: BEAT_LEDGER_STATES,
-        transitions: {
-            ruhig: { ruhig: 0.35, treibend: 0.35, doppelschlag: 0.1, synkope: 0.1, break: 0.1 },
-            treibend: { ruhig: 0.15, treibend: 0.3, doppelschlag: 0.3, synkope: 0.15, break: 0.1 },
-            doppelschlag: { ruhig: 0.1, treibend: 0.15, doppelschlag: 0.3, synkope: 0.3, break: 0.15 },
-            synkope: { ruhig: 0.1, treibend: 0.1, doppelschlag: 0.15, synkope: 0.3, break: 0.35 },
-            break: { ruhig: 0.35, treibend: 0.1, doppelschlag: 0.1, synkope: 0.15, break: 0.3 },
-        },
-        baseVisibility: 1,
-        visibilityPerUpgrade: [],
-    },
-    actions: BEAT_LEDGER_ACTIONS,
+    // Meilensteine UNVERAENDERT gegenueber der bisherigen Beat-Ledger-
+    // Groessenordnung (bleiben die Skalierungs-Basis fuer Champion's Ledger,
+    // siehe dessen ticketYieldFactor-Kommentar unten).
     milestones: [{ threshold: 30 }, { threshold: 70 }, { threshold: 140 }],
-    // Basispreise = Greed Run * 1.4. Total interleaved Kosten ~123.6 Tickets
-    // bei Schwelle 140 -> 88.3%.
-    depthUpgrades: buildDepthUpgrades('beat-ledger', 'Vorlauf', [3, 6, 11, 25]),
-    precisionUpgrades: buildPrecisionUpgrades('beat-ledger', 'Notenschaerfe', [4, 8, 22]),
+    run: BOOST_BARRAGE_RUN,
+    // Drei unabhaengige Upgrade-Leitern (game-spec.md 4.4 "Drei unabhaengige
+    // Upgrade-Achsen") -- Basispreise = Greed Runs Grid-Upgrade-Basispreise *
+    // 1.4 (Skalierungsfaktor), gerundet, analog zum bisherigen Vorgehen bei
+    // den anderen Automaten.
+    warningUpgrades: buildWarningUpgrades('boost-barrage', 'Fruehwarnsystem', [2, 3], [4, 10]),
+    boostPowerUpgrades: buildBoostPowerUpgrades('boost-barrage', 'Ueberladung', [2, 3], [5, 12]),
+    chargeUpgrades: buildChargeUpgrades('boost-barrage', 'Ladekapazitaet', [2, 3], [6, 14]),
     ticketYieldFactor: ticketYieldFactorFor(1.4), // ~= 0.845
 };
 
@@ -796,7 +966,7 @@ export const CHAMPIONS_LEDGER: CyclicMachineConfig = {
     ticketYieldFactor: ticketYieldFactorFor(1.8), // ~= 0.745
 };
 
-export const MACHINES: readonly MachineConfig[] = [GREED_RUN, TRAP_TUNNELS, BEAT_LEDGER, CHAMPIONS_LEDGER];
+export const MACHINES: readonly MachineConfig[] = [GREED_RUN, TRAP_TUNNELS, BOOST_BARRAGE, CHAMPIONS_LEDGER];
 
 // Freischalt-Schwellen fuer Automat 2-4 (game-spec.md 3.3) leben seit
 // Phase 7 als echtes Hallen-Upgrade-System in src/data/hall.config.ts

@@ -26,8 +26,15 @@ import type Decimal from 'break_infinity.js';
 // `trapPreviewRangeUpgrades` entfaellt (die Vorschau-Achse gibt es nicht
 // mehr), alte `machineUpgrades['trap-tunnels']`-Eintraege koennten auf
 // `trap-tunnels-trap-preview-*`-ids zeigen, die es nicht mehr gibt -- erneut
-// keine Migration.
-export const CURRENT_SAVE_VERSION = 6;
+// keine Migration. Phase 7m (Boost Barrage Genre-Ersatz, game-spec.md 4.4)
+// erhoeht sie erneut auf 7: Automat 3 wechselt von `kind: 'cyclic'` (vormals
+// "Beat Ledger", DDR-Twist, verworfen -- game-spec.md 4.4) auf
+// `kind: 'boostBarrage'`, die Automaten-id selbst wechselt von 'beat-ledger'
+// zu 'boost-barrage' (komplett andere Mechanik verdient eine eigene id statt
+// eine stale Rhythmus-Spiel-id weiterzutragen) -- alte
+// `machineUpgrades['beat-ledger']`/`unlockedMachines`/`completedMachines`-
+// Eintraege wuerden sonst ins Leere zeigen. Erneut keine Migration.
+export const CURRENT_SAVE_VERSION = 7;
 
 // Gemeinsame Felder, die JEDER Automat hat, unabhaengig von seiner
 // Kernmechanik (Phase 7f, game-spec.md 4.2: Greed Run bekommt eine
@@ -99,7 +106,65 @@ export interface TrapTunnelsMachineConfig extends MachineIdentity {
     enemyCountUpgrades: MachineUpgradeDef[];
 }
 
-export type MachineConfig = CyclicMachineConfig | GridMachineConfig | TrapTunnelsMachineConfig;
+// Automat 3 "Boost Barrage" (Phase 7m, game-spec.md 4.4): Autopilot-
+// Space-Shooter statt zyklisches Konter-Modell -- ersetzt die urspruengliche
+// CyclicMachineConfig-Belegung von Automat 3 ("Beat Ledger", DDR-Twist,
+// verworfen) vollstaendig. Nutzt PatternEngine/CyclicActionDef nicht mehr
+// (siehe BoostBarrageEngine.ts). Drei Upgrade-Achsen, aber bewusst KEINE
+// davon erhoeht die Wellenanzahl (game-spec.md 4.4 "Bewusstes Design-
+// Prinzip": Wellenanzahl pro Lauf ist NICHT upgradebar, alle Achsen erhoehen
+// ausschliesslich den Ertrag PRO Welle).
+export interface BoostBarrageMachineConfig extends MachineIdentity {
+    kind: 'boostBarrage';
+    run: BoostBarrageRunConfig;
+    // Vorschau/Vorwarnzeit ist bewusst eine reine UI-Timing-Groesse (siehe
+    // BoostBarrageRunConfig-Kommentar unten) -- trotzdem eine ganz normale,
+    // mit Automaten-Punkten bezahlte Upgrade-Leiter wie die anderen beiden.
+    warningUpgrades: MachineUpgradeDef[];
+    boostPowerUpgrades: MachineUpgradeDef[];
+    chargeUpgrades: MachineUpgradeDef[];
+}
+
+export type MachineConfig = CyclicMachineConfig | GridMachineConfig | TrapTunnelsMachineConfig | BoostBarrageMachineConfig;
+
+// --- Boost Barrage / Autopilot-Space-Shooter-Automat (Phase 7m, ----------
+// game-spec.md 4.4) --------------------------------------------------------
+
+export type BoostBarrageEnemyType = 'scout' | 'bomber' | 'elite';
+export type BoostBarrageBoostType = 'firepower' | 'shield' | 'evade' | 'focus';
+
+// Bewusst EIN Bundle-Objekt (wie TrapTunnelsRunConfig/GridSectorConfig oben)
+// -- BoostBarrageEngine.ts nimmt dieses Objekt komplett entgegen. `waveCount`
+// ist FEST und wird von KEINEM Upgrade beeinflusst (game-spec.md 4.4
+// "Bewusstes Design-Prinzip"). `baseWarningMs`/`warningMsPerLevel` werden
+// NICHT von der Engine selbst gelesen -- die Engine kennt kein Echtzeit-
+// Konzept (Architektur-Kurzregel CLAUDE.md: Kernlogik kennt weder Phaser noch
+// React). Sie leben trotzdem hier im selben Bundle (statt verstreut in der
+// Szene), weil sie zur selben automaten-internen Vorwarnzeit-Upgrade-Leiter
+// gehoeren wie die uebrigen Werte -- BoostBarrageScene.ts liest sie direkt
+// aus `machine.run`, um die Verzoegerung vor jeder Gefechts-Aufloesung zu
+// bestimmen (das laengere Aktivierungsfenster selbst, game-spec.md 4.4
+// "Vorschau/Vorwarnzeit").
+export interface BoostBarrageRunConfig {
+    waveCount: number; // fest, z.B. 5 -- NICHT upgradebar (game-spec.md 4.4)
+    enemiesPerWave: number; // festes Roster pro Welle, z.B. 6
+    enemyWeights: Record<BoostBarrageEnemyType, number>; // relative Gewichte, Scout dominiert deutlich
+    scoutPayoutRange: [min: number, max: number];
+    bomberDestroyPayoutRange: [min: number, max: number]; // Bomber vor dem Feuern zerstoert
+    bomberHitCostRange: [min: number, max: number]; // Betrag (positiv!), wird als negativer Payout angewendet, wenn der Angriff trifft
+    elitePayoutRange: [min: number, max: number];
+    baseBomberDestroyChance: number; // 0-1, Autopilot allein, vor Eskalation/Boosts
+    baseEliteHitChance: number; // 0-1, Autopilot allein, vor Eskalation/Boosts
+    escalationPerDestroyed: number; // Bedrohungszuwachs je bereits in DIESER Welle zerstoertem Gegner (game-spec.md 4.4 "Eskalation")
+    firepowerDestroyBonusPerLevel: number; // addiert auf baseBomberDestroyChance je Boost-Staerke-Stufe, waehrend Feuerkraft aktiv ist
+    firepowerScoutBonusPerLevel: number; // Bonus-Payout auf Scout-Treffer je Stufe, waehrend Feuerkraft aktiv ist
+    shieldDamageReductionPerLevel: number; // 0-1 Anteil des Bomber-Schadens, der je Stufe negiert wird, waehrend Schild aktiv ist
+    focusHitBonusPerLevel: number; // Payout-Multiplikator-Bonus auf Elite-Treffer je Stufe, waehrend Fokus aktiv ist
+    evadeDurationBaseSteps: number; // wie viele Gefechte EIN Ausweich-Einsatz mindestens abdeckt (>=1)
+    evadeDurationPerExtraLevel: number; // zusaetzliche Gefechte je Boost-Staerke-Stufe ueber Stufe 1 hinaus
+    baseWarningMs: number; // reine UI-Timing-Groesse, siehe Datei-Kommentar oben
+    warningMsPerLevel: number; // addiert auf baseWarningMs je Vorschau-Upgrade-Stufe ueber Stufe 1 hinaus
+}
 
 // --- Trap Tunnels / Tunnelnetz-Fallen-Automat (Phase 7i, game-spec.md 4.3) -
 
@@ -248,7 +313,11 @@ export interface UpgradeDef {
 // Phase 7j (game-spec.md 4.3 v2, Kernmodell-Ersatz) entfernt trapPreviewRange
 // wieder (keine Vorschau-Achse mehr) und ergaenzt dynamiteCount (sprengbare
 // Verbindungen pro Run) und enemyCount (gleichzeitig laufende Gegner) --
-// trapCount (gleichzeitig platzierbare Fallen) bleibt unveraendert.
+// trapCount (gleichzeitig platzierbare Fallen) bleibt unveraendert. Phase 7m
+// (game-spec.md 4.4) ergaenzt drei weitere Varianten fuer Boost Barrages
+// Upgrade-Achsen: warningWindow (Vorwarnzeit in ms, reine UI-Timing-Groesse),
+// boostPower (Boost-Staerke-Stufe 1-3) und boostCharges (Ladungen je Boost-
+// Typ und Welle, 1-3, siehe BoostBarrageEngine.ts).
 export type MachineUpgradeEffect =
     | { type: 'previewDepth'; value: number }
     | { type: 'previewPrecision'; value: number }
@@ -257,7 +326,10 @@ export type MachineUpgradeEffect =
     | { type: 'gridActionBudget'; value: number }
     | { type: 'trapCount'; value: number }
     | { type: 'dynamiteCount'; value: number }
-    | { type: 'enemyCount'; value: number };
+    | { type: 'enemyCount'; value: number }
+    | { type: 'warningWindow'; value: number }
+    | { type: 'boostPower'; value: number }
+    | { type: 'boostCharges'; value: number };
 
 export interface MachineUpgradeDef {
     id: string;

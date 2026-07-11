@@ -1,4 +1,12 @@
-import type { AttendantPoolState, CyclicActionDef, GridSectorConfig, PatternConfig, SectorCategory, TrapTunnelsRunConfig } from './types';
+import type {
+    AttendantPoolState,
+    BoostBarrageRunConfig,
+    CyclicActionDef,
+    GridSectorConfig,
+    PatternConfig,
+    SectorCategory,
+    TrapTunnelsRunConfig,
+} from './types';
 import { computeBlindExpectedValue } from './GridRunEngine';
 
 // Attendant-Automatisierung (game-spec.md 3.2, Baukasten 1.3/1.9). Framework-
@@ -364,6 +372,91 @@ export function getTrapTunnelsAttendantMachinePointsRate(
     const evPerTrap = getTrapTunnelsAttendantExpectedValuePerTrap(run, enemyCount, attendantDynamiteCount, maxDynamiteCount);
     const efficiency = getAttendantEfficiency(knowledge);
     return Math.max(0, evPerTrap) * trapCount * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
+}
+
+// --- Boost-Barrage-Automaten-Ertragsrate (Phase 7m, game-spec.md 4.4, ------
+// "Attendant-Automatisierung": grob vereinfachte Platzhalter-Schaetzung, ----
+// keine echte Timing-Simulation) ---------------------------------------------
+//
+// Wie bei Grid/Trap-Tunnels oben passt weder das zyklische Markov-Modell noch
+// eine Netzwerk-Naeherung -- Boost Barrage hat weder Pattern-Zustaende noch
+// ein Tunnelnetz, sondern eine pro Welle live aufgeloeste Gegner-Sequenz
+// (siehe BoostBarrageEngine.ts). Dieselbe Interpolations-IDEE wie bei den
+// anderen drei Automaten: linear zwischen einer Blind-EV (kein Boost-Einsatz)
+// und einer Perfekt-Info-EV (voller, optimaler Boost-Einsatz auf jedes
+// Gefecht), gewichtet mit dem vom Attendant tatsaechlich nutzbaren Anteil des
+// Ladungs-Kontingents (skaliert mit Musterkenntnis, getAttendantLookahead
+// wiederverwendet -- derselbe Mechanismus wie bei Trap Tunnels' Dynamit-
+// Kontingent). Bewusst OHNE Eskalations-Modellierung und OHNE echtes
+// Timing/Ladungsmanagement -- geschlossene Naeherung statt Monte-Carlo-
+// Simulation (die waere fuer einen bei jedem Tick aufgerufenen Ertragsraten-
+// Pfad zu teuer, siehe computeBlindWaveExpectedValue-Kommentar in
+// BoostBarrageEngine.ts, dort bewusst nur als TEST-Werkzeug fuer die
+// Blind-EV-GARANTIE gedacht).
+function boostBarrageEnemyShares(run: BoostBarrageRunConfig): { scout: number; bomber: number; elite: number } {
+    const { scout, bomber, elite } = run.enemyWeights;
+    const total = scout + bomber + elite;
+    if (total <= 0) return { scout: 0, bomber: 0, elite: 0 };
+    return { scout: scout / total, bomber: bomber / total, elite: elite / total };
+}
+
+// Blind-EV/Gefecht OHNE Boost-Einsatz und OHNE Eskalation (grobe Naeherung,
+// anders als die Monte-Carlo-Simulation in BoostBarrageEngine.ts).
+export function getBoostBarrageBlindExpectedValuePerEncounter(run: BoostBarrageRunConfig): number {
+    const shares = boostBarrageEnemyShares(run);
+    const scoutEv = mean(run.scoutPayoutRange);
+    const bomberEv =
+        run.baseBomberDestroyChance * mean(run.bomberDestroyPayoutRange) -
+        (1 - run.baseBomberDestroyChance) * mean(run.bomberHitCostRange);
+    const eliteEv = run.baseEliteHitChance * mean(run.elitePayoutRange);
+    return shares.scout * scoutEv + shares.bomber * bomberEv + shares.elite * eliteEv;
+}
+
+// Perfekt-Info-Naeherung: voller Boost-Einsatz auf jedes Gefecht -- Bomber
+// wird IMMER vor dem Feuern zerstoert (destroyChance faktisch 1), Elite wird
+// IMMER per Fokus getroffen (hitChance 1, mit Fokus-Bonus), Scout profitiert
+// vom Feuerkraft-Bonus. OHNE echtes Ladungs-/Timing-Management (game-spec.md
+// 4.4 "Attendant-Automatisierung" fordert explizit keine echte Simulation).
+function getBoostBarragePerfectInfoExpectedValuePerEncounter(run: BoostBarrageRunConfig, boostPowerLevel: number): number {
+    const shares = boostBarrageEnemyShares(run);
+    const scoutEv = mean(run.scoutPayoutRange) + run.firepowerScoutBonusPerLevel * boostPowerLevel;
+    const bomberEv = mean(run.bomberDestroyPayoutRange);
+    const eliteEv = mean(run.elitePayoutRange) * (1 + run.focusHitBonusPerLevel * boostPowerLevel);
+    return shares.scout * scoutEv + shares.bomber * bomberEv + shares.elite * eliteEv;
+}
+
+// EV/Gefecht, linear interpoliert zwischen Blind-EV und Perfekt-Info-EV,
+// gewichtet mit dem vom Attendant nutzbaren Anteil des Ladungs-Kontingents
+// (Musterkenntnis-skaliert, analog zu getTrapTunnelsAttendantExpectedValuePerTrap).
+export function getBoostBarrageAttendantExpectedValuePerEncounter(
+    run: BoostBarrageRunConfig,
+    boostPowerLevel: number,
+    attendantCharges: number,
+    maxCharges: number,
+): number {
+    const blindEv = getBoostBarrageBlindExpectedValuePerEncounter(run);
+    const perfectInfoEv = getBoostBarragePerfectInfoExpectedValuePerEncounter(run, boostPowerLevel);
+    const controlFraction = maxCharges > 0 ? clamp01(attendantCharges / maxCharges) : 0;
+    return blindEv + controlFraction * (perfectInfoEv - blindEv);
+}
+
+// Vollstaendige Ertragsrate des Boost-Barrage-Automaten -- Komposition wie
+// getTrapTunnelsAttendantMachinePointsRate oben: nutzbares Ladungs-
+// Kontingent skaliert mit Musterkenntnis (getAttendantLookahead
+// wiederverwendet), EV/Gefecht, dann Effizienz + Aktionen/Sekunde. EINE
+// "Aktion" des Attendant entspricht hier einem einzelnen Gefecht (game-spec.md
+// 4.4 fordert kein eigenes Zeitmodell dafuer -- die reale Vorwarnzeit ist
+// ohnehin reine UI-Timing-Groesse, siehe BoostBarrageEngine.ts).
+export function getBoostBarrageAttendantMachinePointsRate(
+    run: BoostBarrageRunConfig,
+    knowledge: number,
+    boostPowerLevel: number,
+    maxCharges: number,
+): number {
+    const attendantCharges = getAttendantLookahead(maxCharges, knowledge);
+    const evPerEncounter = getBoostBarrageAttendantExpectedValuePerEncounter(run, boostPowerLevel, attendantCharges, maxCharges);
+    const efficiency = getAttendantEfficiency(knowledge);
+    return Math.max(0, evPerEncounter) * efficiency * ATTENDANT_ACTIONS_PER_SECOND;
 }
 
 // --- Pool-Dynamik (Vordergrund-Optik) + Offline-Anwendung -----------------

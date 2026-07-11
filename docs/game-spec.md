@@ -64,11 +64,11 @@ Automat (Skill-Score) → gleichzeitig zwei Ausgaben pro Aktion:
 
 ## 4. Die 4 Automaten
 
-Automaten 2–4 teilen sich weiterhin dieselben Kernsysteme (Details siehe `implementation-plan.md`, Abschnitt Engine):
+Nur noch Automat 4 nutzt die gemeinsamen Kernsysteme aus 4.1/4.1b/4.1c unverändert (Details siehe `implementation-plan.md`, Abschnitt Engine):
 - **PatternEngine** – probabilistische Zustandsübergänge, progressive Teilaufdeckung durch Upgrades
 - **AttendantEngine** – automatisierte Ausführung nach Musterkenntnis-Wert
 
-**Ausnahme Automat 1 ("Greed Run"):** Bekommt ab 2026-07-10 eine eigene, genre-spezifische Mechanik (5×5-Sektorenfeld statt zyklisches Pattern, siehe 4.2) — nutzt `PatternEngine` nicht mehr. Ein bewusstes Genre-Rework-Experiment, siehe CLAUDE.md für die zugehörige Architektur-Konsequenz (eigene Szene statt der bisher einzigen generischen `MachineScene.ts`). Gemeinsam bleibt für alle vier Automaten die Hallen-Ökonomie (`EconomyStore`, Tickets/Automaten-Punkte, Meilensteine, Speicherstand).
+**Automaten 1–3 haben jeweils eigene, genre-spezifische Mechaniken** (5×5-Sektorenfeld bei Greed Run, Tunnelnetz-Graph bei Trap Tunnels, Autopilot+Boosts bei Boost Barrage — siehe 4.2/4.3/4.4) und nutzen `PatternEngine` nicht mehr. Jeweils ein bewusstes Genre-Rework-Experiment, siehe CLAUDE.md für die zugehörige Architektur-Konsequenz (eigene Szene statt der generischen `MachineScene.ts`). Gemeinsam bleibt für alle vier Automaten die Hallen-Ökonomie (`EconomyStore`, Tickets/Automaten-Punkte, Meilensteine, Speicherstand).
 
 ### 4.1 Gemeinsame Rundenstruktur (gilt für alle 4 Automaten)
 
@@ -273,11 +273,52 @@ mehr selbst auswerten. Verbindliche Korrekturen:
 
 **Ausdrücklich noch nicht Teil dieser Version:** Fokus-Wahl-Analogon, größeres/anderes Netz als 4×4, mehr als eine Dynamit-"Sorte". Als möglicher Backlog vorgemerkt, nicht jetzt bauen.
 
-### 4.4 Automat 3 — "Beat Ledger" (DDR/Whac-a-Mole-Twist)
+### 4.4 Automat 3 — "Boost Barrage" (Space-Shooter-Twist, ersetzt den verworfenen "Beat Ledger"/DDR-Ansatz)
 
-- **Thema:** Begrenzte Beat-Tokens werden vorab auf eine Zeitleiste/ein Notenraster gelegt, Runde läuft im Takt automatisch ab
-- **Pattern-Basis:** Rhythmus/Pattern ist von Anfang an bekannt (wie Noten) – Herausforderung liegt in der Umsetzung der Planung, nicht im Erraten der Umgebung
-- **Risiko-Achse:** Enge Kombo-Fenster (hoher Multiplikator, leicht zu verfehlen) vs. entspannte Abstände (sicher, geringerer Multiplikator)
+**Ersetzt ab hier vollständig die gemeinsame Zyklus-Mechanik aus 4.1/4.1b/4.1c für Automat 3.** Automat 4 bleibt unverändert bei 4.1/4.1b/4.1c.
+
+**Verworfene Vorgänger-Ideen (Begründung, zur Nachvollziehbarkeit):** Ein Rhythmus-/DDR-Automat ("Beat Ledger") wurde verworfen, weil das Genre strukturell von Musik lebt — gute, abwechslungsreiche Musik ohne Lizenzkosten ist praktisch nicht leistbar, und ein Rhythmusspiel ohne Musik trägt sich nicht (Baukasten Abschnitt 2, "Genre-Versprechen brechen"). Eine Zwischenidee (Football-Manager-Spielzugplanung: Run/Pass-Calls gegen eine Verteidigungs-Tendenz) wurde ebenfalls verworfen, weil sie sich zu weit vom klassischen Arcade-Automaten-Gefühl entfernt hätte, das die anderen drei Automaten prägt.
+
+**Kernidee:** Das Schiff steuert und feuert automatisch gegen eine anrückende Gegner-Formation (Autopilot). Der Spieler beobachtet den Ablauf live und aktiviert dabei begrenzt verfügbare Boosts, wenn er eine günstige Gelegenheit erkennt. Aktivierungsfenster sind großzügig bemessen (mehrere Sekunden) — verpasstes Timing bedeutet suboptimale Nutzung, keine Katastrophe. Das ist bewusst KEIN Echtzeit-Reflex im Sinne von Abschnitt 1: kein Millisekunden-Druck, nur eine informierte Entscheidung darüber, WANN eine begrenzte Ressource eingesetzt wird.
+
+**Rundenstruktur (ersetzt 4.1 Punkte 1–2 für diesen Automaten):** Ein Lauf besteht aus einer festen Anzahl Wellen (Richtwert 5, NICHT upgradebar — Aufwand pro Lauf bleibt konstant, siehe Design-Prinzip unten). Jede Welle läuft automatisch und live ab, keine gesonderte Planungsphase davor nötig. Direkt danach folgt die nächste Welle, bis die feste Wellenanzahl erreicht ist.
+
+**Gegner-Roster (pro Welle fest generiert):**
+
+- **Scout** — häufigster Typ, schwach, vom Autopiloten zuverlässig getroffen, niedriger Punktwert. Trägt allein schon die Blind-Erwartungswert-Garantie (siehe unten).
+- **Bomber** — selten, robuster. Lädt einen Flächenangriff auf, sichtbar signalisiert (Blink-Warnung) bevor er auslöst. Trifft der Angriff, kostet das Schaden/Ertrag.
+- **Elite** — selten, hoher Punktwert, aber evasiv — vom Autopiloten allein nur selten zuverlässig getroffen.
+
+**Vier Boosts, jeweils mit eigenem Cooldown und begrenzter Ladungszahl (Start je 1 gleichzeitig verfügbare Ladung):**
+
+1. **Feuerkraft-Boost** (Overcharge) — erhöht Schaden/Feuerrate kurzzeitig. Vorteilhaft z. B. bei mehreren gebündelten Scouts (schnelles Aufräumen vor der nächsten Eskalationsstufe) oder um einen Bomber VOR voller Aufladung zu zerstören.
+2. **Schild-Boost** — absorbiert/reduziert eingehenden Schaden kurzzeitig. Vorteilhaft z. B. wenn ein Bomber kurz vor Auslösung steht und nicht mehr rechtzeitig zerstörbar ist, oder generell in der aggressiveren Spätphase einer Welle.
+3. **Ausweich-Boost** — weicht einem Angriff vollständig aus, Autopilot pausiert dafür kurz die eigene Offensive. Vorteilhaft z. B. wenn der Schild bereits verbraucht ist oder zwei Angriffe gleichzeitig eintreffen.
+4. **Fokus-Boost** (Zielerfassung) — garantiert Treffer auf ein gewähltes Ziel kurzzeitig. Vorteilhaft v. a. gegen Elite-Gegner, die der Autopilot sonst kaum zuverlässig träfe.
+
+**Eskalation innerhalb einer Welle:** Je mehr Gegner einer Formation zerstört wurden, desto aggressiver/schneller agieren die verbleibenden (klassischer Space-Invaders-Effekt). Das erzeugt einen echten Trade-off zwischen frühem Aufräumen (Feuerkraft) und dem Aufsparen von Schild/Ausweichen für die gefährlichere Spätphase.
+
+**Vorschau/Vorwarnzeit:** Baseline zeigt eine Bedrohung (v. a. Bomber-Aufladung) erst kurz bevor sie eintritt (Richtwert 1 Sekunde) — reicht für reaktives Kontern. Das Vorschau-Upgrade verlängert diese Vorwarnzeit graduell (z. B. bis zu 3 Sekunden), was zunehmend proaktives statt nur reaktives Boost-Timing erlaubt.
+
+**Drei unabhängige, ticket-finanzierte Upgrade-Achsen:**
+
+1. **Vorschau/Vorwarnzeit** — proaktives statt nur reaktives Timing.
+2. **Boost-Stärke** — mehr Wirkung pro Aktivierung, bei gleichbleibendem Aufwand (gleiche Anzahl Wellen, gleiche Anzahl Aktivierungsmöglichkeiten).
+3. **Ladungen/Cooldown** — häufigere Boost-Nutzung pro Welle, ohne dass die Welle selbst länger würde.
+
+**Bewusstes Design-Prinzip (Konsequenz aus vorheriger Diskussion, verbindlich):** Die Wellenanzahl pro Lauf ist NICHT upgradebar. Alle drei Achsen erhöhen ausschließlich den erwarteten Ertrag PRO Welle, nicht deren Anzahl — der Spieler soll mit gleichem manuellem Aufwand mehr erreichen, nicht mehr Aufwand für mehr Ertrag betreiben müssen. Das weicht bewusst von Automat 1s Aktionsbudget-Achse ab (dort erhöht mehr Budget sowohl die mögliche Reichweite als auch den nötigen Aufwand); hier NICHT rückwirkend angleichen, nur als bewusste Abweichung dokumentiert.
+
+**Blind-Erwartungswert-Garantie (automatisiert zu prüfen, gleiches Prinzip wie bei den anderen Automaten):** Auch ganz ohne jeden Boost-Einsatz (reiner Autopilot) muss eine Welle im Schnitt positiv bleiben — getragen v. a. durch die zuverlässig getroffenen Scouts. Boosts erhöhen den Ertrag darüber hinaus, sind aber keine Voraussetzung für Netto-Fortschritt.
+
+**Barrierefreiheit (gilt dauerhaft, siehe CLAUDE.md):** Scout/Bomber/Elite sowie die vier Boost-Typen unterscheiden sich jeweils durch Form/Symbol UND Farbe, niemals nur durch Farbe allein. Die Bomber-Aufladewarnung ist zusätzlich zur Farbänderung durch ein Blink-Muster/Symbol erkennbar.
+
+**Attendant-Automatisierung:** Wie bei den anderen Automaten eine grob vereinfachte Platzhalter-Schätzung (angenommene durchschnittliche Boost-Nutzung basierend auf Musterkenntnis, keine echte Timing-Simulation durch den Attendant) — bitte in STATUS.md klar als bewusste Vereinfachung dokumentieren.
+
+**Ökonomie-Anbindung, Architektur, Speicherstand:** Tickets-/Automaten-Punkte-Ausschüttung, Meilenstein-Schwellen und Speicherstand-Mechanik technisch wie bei den anderen Automaten (`EconomyStore`, `milestonePips.ts` geteilt). Eigene Szene (`BoostBarrageScene.ts` o. ä.), da die Mechanik strukturell vom gemeinsamen Zyklus-Modell abweicht (siehe CLAUDE.md Architektur-Kurzregel). `CURRENT_SAVE_VERSION` erneut erhöhen, alte Spielstände beim Laden ablehnen statt migrieren (etabliertes Vorgehen).
+
+**Ausdrücklich noch nicht Teil dieser Version:** Loadout-Wahl (welche Boost-Typen pro Lauf aktiv sind), weitere Boost-Typen (z. B. EMP/Crowd-Control), echte optionale manuelle Steuerung als Experten-Extra. Als möglicher Backlog vorgemerkt, nicht jetzt bauen.
+
+- **Warum stimmiger Ersatz für den verworfenen Beat-Ledger-Ansatz:** Space-Shooter ist archetypisch für "Arcade-Automat", braucht keine Musik-Abwechslung zum Funktionieren, und die Autopilot-plus-Boost-Struktur überträgt das Attendant-Prinzip (Baukasten 1.9) besonders natürlich, da die manuelle Kernmechanik selbst schon aus zeitlich großzügigen Aktivierungs-Entscheidungen statt Dauersteuerung besteht.
 
 ### 4.5 Automat 4 — "Champion's Ledger" (Street-Fighter-Twist)
 

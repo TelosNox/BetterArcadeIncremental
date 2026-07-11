@@ -1,20 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
-    BEAT_LEDGER,
+    BOOST_BARRAGE,
     CHAMPIONS_LEDGER,
     CROSS_PRICE_SURCHARGE_K,
     ENEMY_COLORS,
+    ENEMY_TYPE_COLORS,
     GREED_RUN,
     MACHINES,
+    MAX_BOOST_CHARGES,
+    MAX_BOOST_POWER,
     MAX_GRID_PRECISION,
     MAX_PRECISION,
     MAX_DYNAMITE_COUNT,
     MAX_ENEMY_COUNT,
     MAX_SIGHT_RANGE,
     MAX_TRAP_COUNT,
+    MAX_WARNING_LEVEL,
     N_STATES,
     SECTOR_COLORS,
     START_ACTION_BUDGET,
+    START_BOOST_CHARGES,
+    START_BOOST_POWER,
     START_DEPTH,
     START_DYNAMITE_COUNT,
     START_ENEMY_COUNT,
@@ -22,11 +28,14 @@ import {
     START_PRECISION,
     START_SIGHT_RANGE,
     START_TRAP_COUNT,
+    START_WARNING_LEVEL,
     TRAP_TUNNELS,
     buildCyclicActions,
     computeCandidateExclusionOrder,
     computeInterleavedUpgradeCost,
     getActionBudget,
+    getBoostBarrageMachineUpgrade,
+    getBoostPowerLevel,
     getDynamiteCount,
     getEnemyCount,
     getEntryPointMachine,
@@ -38,6 +47,7 @@ import {
     getMachineConfig,
     getMachineUpgrade,
     getMachineUpgradeCost,
+    getMaxBoostCharges,
     getPreviewDepth,
     getPreviewPrecision,
     getReachedMilestones,
@@ -47,6 +57,8 @@ import {
     getTrapCount,
     getTrapTunnelsMachineUpgrade,
     getUpgradeCostToMilestoneRatio,
+    getWarningLevel,
+    getWarningWindowMs,
     isFinalMilestoneReached,
     resolveMachineAction,
     STATE_COLORS,
@@ -56,14 +68,16 @@ import { PatternEngine } from '../engine/PatternEngine';
 import { computeStationaryDistribution } from '../engine/AttendantEngine';
 import { computeBlindExpectedValue, SECTOR_CATEGORIES } from '../engine/GridRunEngine';
 import { computeBlindTrapExpectedValue } from '../engine/TrapTunnelsEngine';
+import { computeBlindWaveExpectedValue } from '../engine/BoostBarrageEngine';
 
 // Phase 7f (Greed Run Genre-Rework): Greed Run ist ein Grid-Automat (kind:
 // 'grid'). Phase 7i (Trap Tunnels Genre-Rework): Trap Tunnels ist jetzt ein
-// eigener kind ('trapTunnels') -- beide haben kein pattern/actions/
-// depthUpgrades/precisionUpgrades mehr. Alle Tests, die diese Felder
-// brauchen, laufen ab hier nur noch ueber die zwei verbleibenden,
+// eigener kind ('trapTunnels'). Phase 7m (Boost Barrage Genre-Ersatz): Boost
+// Barrage ist jetzt ein eigener kind ('boostBarrage') -- alle drei haben kein
+// pattern/actions/depthUpgrades/precisionUpgrades mehr. Alle Tests, die diese
+// Felder brauchen, laufen ab hier nur noch ueber den einen verbleibenden,
 // unveraendert zyklischen Automaten (kind: 'cyclic').
-const CYCLIC_MACHINES: readonly CyclicMachineConfig[] = [BEAT_LEDGER, CHAMPIONS_LEDGER];
+const CYCLIC_MACHINES: readonly CyclicMachineConfig[] = [CHAMPIONS_LEDGER];
 
 // Stationaere Verteilung einer (ergodischen) Markov-Kette per Power-Iteration
 // -- seit Phase 7d Produktionscode (AttendantEngine.ts::
@@ -115,7 +129,7 @@ describe('machines.config', () => {
 
         it('findet Automat 2-4 ueber ihre id', () => {
             expect(getMachineConfig('trap-tunnels')).toBe(TRAP_TUNNELS);
-            expect(getMachineConfig('beat-ledger')).toBe(BEAT_LEDGER);
+            expect(getMachineConfig('boost-barrage')).toBe(BOOST_BARRAGE);
             expect(getMachineConfig('champions-ledger')).toBe(CHAMPIONS_LEDGER);
         });
     });
@@ -129,9 +143,10 @@ describe('machines.config', () => {
             expect(MACHINES.filter((machine) => machine.entryPoint)).toHaveLength(1);
         });
 
-        it('Greed Run ist der einzige Grid-Automat, Trap Tunnels der einzige Tunnelnetz-Automat, die uebrigen zwei bleiben zyklisch (Phase 7f/7i)', () => {
+        it('Greed Run ist der einzige Grid-Automat, Trap Tunnels der einzige Tunnelnetz-Automat, Boost Barrage der einzige Autopilot-Automat, Champions Ledger bleibt zyklisch (Phase 7f/7i/7m)', () => {
             expect(GREED_RUN.kind).toBe('grid');
             expect(TRAP_TUNNELS.kind).toBe('trapTunnels');
+            expect(BOOST_BARRAGE.kind).toBe('boostBarrage');
             for (const machine of CYCLIC_MACHINES) {
                 expect(machine.kind).toBe('cyclic');
             }
@@ -355,6 +370,116 @@ describe('machines.config', () => {
         });
     });
 
+    describe('Boost Barrage (Autopilot-Space-Shooter-Automat, Phase 7m, ersetzt den verworfenen Beat-Ledger/DDR-Ansatz)', () => {
+        it('run-Config hat eine feste, positive Wellenanzahl und ein plausibles Gegner-Roster', () => {
+            expect(BOOST_BARRAGE.run.waveCount).toBeGreaterThan(0);
+            expect(BOOST_BARRAGE.run.enemiesPerWave).toBeGreaterThan(0);
+            expect(BOOST_BARRAGE.run.enemyWeights.scout).toBeGreaterThan(BOOST_BARRAGE.run.enemyWeights.bomber);
+            expect(BOOST_BARRAGE.run.enemyWeights.scout).toBeGreaterThan(BOOST_BARRAGE.run.enemyWeights.elite);
+        });
+
+        it('Blind-EV-Garantie: eine komplette Welle OHNE jeden Boost-Einsatz ist im Erwartungswert positiv (per Simulation, game-spec.md 4.4 PFLICHT)', () => {
+            const ev = computeBlindWaveExpectedValue(BOOST_BARRAGE.run, 4000, Math.random);
+            expect(ev).toBeGreaterThan(0);
+        });
+
+        it('Meilenstein-Schwellen und ticketYieldFactor entsprechen der bisherigen Automat-3-Groessenordnung (game-spec.md 4.4)', () => {
+            expect(BOOST_BARRAGE.milestones.map((m) => m.threshold)).toEqual([30, 70, 140]);
+            expect(BOOST_BARRAGE.ticketYieldFactor).toBeCloseTo(0.845, 2);
+        });
+
+        it('alle drei Upgrade-Leitern tragen ausschliesslich die erwarteten Effekt-Typen (Design-Prinzip: nur Ertrag pro Welle steigt, nie die Wellenanzahl)', () => {
+            expect(new Set(BOOST_BARRAGE.warningUpgrades.map((u) => u.effect.type))).toEqual(new Set(['warningWindow']));
+            expect(new Set(BOOST_BARRAGE.boostPowerUpgrades.map((u) => u.effect.type))).toEqual(new Set(['boostPower']));
+            expect(new Set(BOOST_BARRAGE.chargeUpgrades.map((u) => u.effect.type))).toEqual(new Set(['boostCharges']));
+        });
+
+        it('hat 2 Vorwarnzeit-, 2 Boost-Staerke- und 2 Ladungs-Upgrades', () => {
+            expect(BOOST_BARRAGE.warningUpgrades).toHaveLength(2);
+            expect(BOOST_BARRAGE.boostPowerUpgrades).toHaveLength(2);
+            expect(BOOST_BARRAGE.chargeUpgrades).toHaveLength(2);
+        });
+
+        it('alle drei Leitern haben positive, strikt steigende Basispreise', () => {
+            for (const ladder of [BOOST_BARRAGE.warningUpgrades, BOOST_BARRAGE.boostPowerUpgrades, BOOST_BARRAGE.chargeUpgrades]) {
+                for (let i = 1; i < ladder.length; i += 1) {
+                    expect(ladder[i - 1].cost).toBeGreaterThan(0);
+                    expect(ladder[i].cost).toBeGreaterThan(ladder[i - 1].cost);
+                }
+            }
+        });
+
+        it('getWarningLevel/getBoostPowerLevel/getMaxBoostCharges liefern die Startwerte ohne gekaufte Upgrades', () => {
+            expect(getWarningLevel(BOOST_BARRAGE, [])).toBe(START_WARNING_LEVEL);
+            expect(getBoostPowerLevel(BOOST_BARRAGE, [])).toBe(START_BOOST_POWER);
+            expect(getMaxBoostCharges(BOOST_BARRAGE, [])).toBe(START_BOOST_CHARGES);
+        });
+
+        it('alle drei Getter deckeln bei ihrem jeweiligen Maximum (letzte Stufe)', () => {
+            expect(getWarningLevel(BOOST_BARRAGE, BOOST_BARRAGE.warningUpgrades.map((u) => u.id))).toBe(MAX_WARNING_LEVEL);
+            expect(getBoostPowerLevel(BOOST_BARRAGE, BOOST_BARRAGE.boostPowerUpgrades.map((u) => u.id))).toBe(MAX_BOOST_POWER);
+            expect(getMaxBoostCharges(BOOST_BARRAGE, BOOST_BARRAGE.chargeUpgrades.map((u) => u.id))).toBe(MAX_BOOST_CHARGES);
+        });
+
+        it('getWarningWindowMs steigt mit der Vorwarnzeit-Stufe und entspricht baseWarningMs ohne Upgrades', () => {
+            expect(getWarningWindowMs(BOOST_BARRAGE, [])).toBe(BOOST_BARRAGE.run.baseWarningMs);
+            const owned = BOOST_BARRAGE.warningUpgrades.map((u) => u.id);
+            expect(getWarningWindowMs(BOOST_BARRAGE, owned)).toBe(
+                BOOST_BARRAGE.run.baseWarningMs + (MAX_WARNING_LEVEL - START_WARNING_LEVEL) * BOOST_BARRAGE.run.warningMsPerLevel,
+            );
+        });
+
+        it('getBoostBarrageMachineUpgrade findet ein Upgrade in allen drei Leitern', () => {
+            expect(getBoostBarrageMachineUpgrade(BOOST_BARRAGE, BOOST_BARRAGE.warningUpgrades[0].id)).toBe(
+                BOOST_BARRAGE.warningUpgrades[0],
+            );
+            expect(getBoostBarrageMachineUpgrade(BOOST_BARRAGE, BOOST_BARRAGE.boostPowerUpgrades[0].id)).toBe(
+                BOOST_BARRAGE.boostPowerUpgrades[0],
+            );
+            expect(getBoostBarrageMachineUpgrade(BOOST_BARRAGE, BOOST_BARRAGE.chargeUpgrades[0].id)).toBe(
+                BOOST_BARRAGE.chargeUpgrades[0],
+            );
+            expect(getBoostBarrageMachineUpgrade(BOOST_BARRAGE, 'unbekannt')).toBeUndefined();
+        });
+
+        it('ENEMY_TYPE_COLORS liefert fuer alle drei Gegnertypen eine eigene, unterscheidbare Farbe (Barrierefreiheits-Grundsatz)', () => {
+            const colors = Object.values(ENEMY_TYPE_COLORS);
+            expect(new Set(colors).size).toBe(colors.length);
+        });
+    });
+
+    describe('getMachineAttendantRate (Boost-Barrage-Zweig, Phase 7m, dokumentierte Vereinfachung)', () => {
+        it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
+            const rate = getMachineAttendantRate(BOOST_BARRAGE, 0, [], 1);
+            expect(rate.machinePointsPerSecond).toBe(0);
+            expect(rate.hallTicketsPerSecond).toBe(0);
+        });
+
+        it('liefert eine positive Rate bei voller Musterkenntnis', () => {
+            const rate = getMachineAttendantRate(BOOST_BARRAGE, 1, [], 1);
+            expect(rate.machinePointsPerSecond).toBeGreaterThan(0);
+            expect(rate.hallTicketsPerSecond).toBeGreaterThan(0);
+        });
+
+        it('hallTicketsPerSecond skaliert mit ticketYieldFactor und dem hallenweiten ticketYieldRate-Parameter', () => {
+            const base = getMachineAttendantRate(BOOST_BARRAGE, 1, [], 1);
+            const doubled = getMachineAttendantRate(BOOST_BARRAGE, 1, [], 2);
+            expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
+        });
+
+        it('steigt mit gekaufter Boost-Staerke bei ausreichender Musterkenntnis (bessere Perfekt-Info-Naeherung)', () => {
+            const withoutUpgrades = getMachineAttendantRate(BOOST_BARRAGE, 1, [], 1);
+            const withUpgrades = getMachineAttendantRate(BOOST_BARRAGE, 1, BOOST_BARRAGE.boostPowerUpgrades.map((u) => u.id), 1);
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
+        });
+
+        it('steigt mit gekaufter Ladungsanzahl (mehr nutzbares Kontingent fuer den Attendant)', () => {
+            const withoutUpgrades = getMachineAttendantRate(BOOST_BARRAGE, 0.9, [], 1);
+            const withUpgrades = getMachineAttendantRate(BOOST_BARRAGE, 0.9, BOOST_BARRAGE.chargeUpgrades.map((u) => u.id), 1);
+            expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);
+        });
+    });
+
     describe('buildCyclicActions', () => {
         const states = ['a', 'b', 'c', 'd', 'e'];
         const templates = states.map((s) => ({
@@ -382,7 +507,7 @@ describe('machines.config', () => {
     });
 
     describe('resolveMachineAction', () => {
-        const action = BEAT_LEDGER.actions[0]; // 'grundschlag': win 'treibend', loss 'break'
+        const action = CHAMPIONS_LEDGER.actions[0]; // 'angriff': win 'aggressiv', loss 'spezialmove'
 
         it('liefert payoutBig am Gewinn-Zustand', () => {
             expect(resolveMachineAction(action, action.counterState)).toEqual({
@@ -399,7 +524,7 @@ describe('machines.config', () => {
         });
 
         it('liefert payoutSimple bei jedem anderen Zustand', () => {
-            const neutralStates = BEAT_LEDGER.pattern.states.filter(
+            const neutralStates = CHAMPIONS_LEDGER.pattern.states.filter(
                 (s) => s !== action.counterState && s !== action.losesToState,
             );
             expect(neutralStates.length).toBe(3);
@@ -456,64 +581,64 @@ describe('machines.config', () => {
 
     describe('getPreviewDepth / getPreviewPrecision', () => {
         it('liefert START_DEPTH/START_PRECISION ohne gekaufte Upgrades', () => {
-            expect(getPreviewDepth(BEAT_LEDGER, [])).toBe(START_DEPTH);
-            expect(getPreviewPrecision(BEAT_LEDGER, [])).toBe(START_PRECISION);
+            expect(getPreviewDepth(CHAMPIONS_LEDGER, [])).toBe(START_DEPTH);
+            expect(getPreviewPrecision(CHAMPIONS_LEDGER, [])).toBe(START_PRECISION);
         });
 
         it('steigt mit dem hoechsten gekauften Upgrade je Achse', () => {
-            const owned = [BEAT_LEDGER.depthUpgrades[0].id, BEAT_LEDGER.depthUpgrades[1].id];
-            expect(getPreviewDepth(BEAT_LEDGER, owned)).toBe(BEAT_LEDGER.depthUpgrades[1].effect.value);
+            const owned = [CHAMPIONS_LEDGER.depthUpgrades[0].id, CHAMPIONS_LEDGER.depthUpgrades[1].id];
+            expect(getPreviewDepth(CHAMPIONS_LEDGER, owned)).toBe(CHAMPIONS_LEDGER.depthUpgrades[1].effect.value);
         });
 
         it('deckelt Praezision bei MAX_PRECISION (letzte Stufe)', () => {
-            const owned = BEAT_LEDGER.precisionUpgrades.map((u) => u.id);
-            expect(getPreviewPrecision(BEAT_LEDGER, owned)).toBe(MAX_PRECISION);
+            const owned = CHAMPIONS_LEDGER.precisionUpgrades.map((u) => u.id);
+            expect(getPreviewPrecision(CHAMPIONS_LEDGER, owned)).toBe(MAX_PRECISION);
         });
 
         it('deckelt Tiefe bei N_STATES (letzte Stufe)', () => {
-            const owned = BEAT_LEDGER.depthUpgrades.map((u) => u.id);
-            expect(getPreviewDepth(BEAT_LEDGER, owned)).toBe(N_STATES);
+            const owned = CHAMPIONS_LEDGER.depthUpgrades.map((u) => u.id);
+            expect(getPreviewDepth(CHAMPIONS_LEDGER, owned)).toBe(N_STATES);
         });
     });
 
     describe('getMachineUpgradeCost (Kreuz-Preis-Kopplung)', () => {
         it('entspricht dem Basispreis ohne gekaufte Upgrades der anderen Achse', () => {
-            const upgrade = BEAT_LEDGER.depthUpgrades[0];
-            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, [])).toBeCloseTo(upgrade.cost);
+            const upgrade = CHAMPIONS_LEDGER.depthUpgrades[0];
+            expect(getMachineUpgradeCost(CHAMPIONS_LEDGER, upgrade, [])).toBeCloseTo(upgrade.cost);
         });
 
         it('steigt multiplikativ mit jeder gekauften Stufe der jeweils anderen Achse', () => {
-            const upgrade = BEAT_LEDGER.depthUpgrades[0];
-            const oneOtherBought = [BEAT_LEDGER.precisionUpgrades[0].id];
-            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, oneOtherBought)).toBeCloseTo(
+            const upgrade = CHAMPIONS_LEDGER.depthUpgrades[0];
+            const oneOtherBought = [CHAMPIONS_LEDGER.precisionUpgrades[0].id];
+            expect(getMachineUpgradeCost(CHAMPIONS_LEDGER, upgrade, oneOtherBought)).toBeCloseTo(
                 upgrade.cost * (1 + CROSS_PRICE_SURCHARGE_K),
             );
-            const twoOtherBought = [BEAT_LEDGER.precisionUpgrades[0].id, BEAT_LEDGER.precisionUpgrades[1].id];
-            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, twoOtherBought)).toBeCloseTo(
+            const twoOtherBought = [CHAMPIONS_LEDGER.precisionUpgrades[0].id, CHAMPIONS_LEDGER.precisionUpgrades[1].id];
+            expect(getMachineUpgradeCost(CHAMPIONS_LEDGER, upgrade, twoOtherBought)).toBeCloseTo(
                 upgrade.cost * (1 + CROSS_PRICE_SURCHARGE_K) ** 2,
             );
         });
 
         it('ignoriert bereits gekaufte Stufen der EIGENEN Achse fuer den Aufschlag', () => {
-            const upgrade = BEAT_LEDGER.depthUpgrades[1];
-            const ownDepthBought = [BEAT_LEDGER.depthUpgrades[0].id];
-            expect(getMachineUpgradeCost(BEAT_LEDGER, upgrade, ownDepthBought)).toBeCloseTo(upgrade.cost);
+            const upgrade = CHAMPIONS_LEDGER.depthUpgrades[1];
+            const ownDepthBought = [CHAMPIONS_LEDGER.depthUpgrades[0].id];
+            expect(getMachineUpgradeCost(CHAMPIONS_LEDGER, upgrade, ownDepthBought)).toBeCloseTo(upgrade.cost);
         });
     });
 
     describe('getMachineUpgrade', () => {
         it('findet ein Upgrade in der Tiefe-Leiter', () => {
-            expect(getMachineUpgrade(BEAT_LEDGER, BEAT_LEDGER.depthUpgrades[0].id)).toBe(BEAT_LEDGER.depthUpgrades[0]);
+            expect(getMachineUpgrade(CHAMPIONS_LEDGER, CHAMPIONS_LEDGER.depthUpgrades[0].id)).toBe(CHAMPIONS_LEDGER.depthUpgrades[0]);
         });
 
         it('findet ein Upgrade in der Praezisions-Leiter', () => {
-            expect(getMachineUpgrade(BEAT_LEDGER, BEAT_LEDGER.precisionUpgrades[0].id)).toBe(
-                BEAT_LEDGER.precisionUpgrades[0],
+            expect(getMachineUpgrade(CHAMPIONS_LEDGER, CHAMPIONS_LEDGER.precisionUpgrades[0].id)).toBe(
+                CHAMPIONS_LEDGER.precisionUpgrades[0],
             );
         });
 
         it('liefert undefined fuer unbekannte id', () => {
-            expect(getMachineUpgrade(BEAT_LEDGER, 'unbekannt')).toBeUndefined();
+            expect(getMachineUpgrade(CHAMPIONS_LEDGER, 'unbekannt')).toBeUndefined();
         });
     });
 
@@ -528,15 +653,10 @@ describe('machines.config', () => {
             }
         });
 
-        it('Basispreise sind pro Automat proportional zur jeweiligen Ticket-Oekonomie skaliert (nicht identisch)', () => {
-            const costs = CYCLIC_MACHINES.map((m) => m.depthUpgrades[3].cost);
-            expect(new Set(costs).size).toBe(CYCLIC_MACHINES.length);
-        });
-
         it('getFinalMilestoneThreshold liefert den letzten (hoechsten) Meilenstein', () => {
             expect(getFinalMilestoneThreshold(GREED_RUN)).toBe(100);
             expect(getFinalMilestoneThreshold(TRAP_TUNNELS)).toBe(120);
-            expect(getFinalMilestoneThreshold(BEAT_LEDGER)).toBe(140);
+            expect(getFinalMilestoneThreshold(BOOST_BARRAGE)).toBe(140);
             expect(getFinalMilestoneThreshold(CHAMPIONS_LEDGER)).toBe(180);
         });
     });
@@ -605,29 +725,29 @@ describe('machines.config', () => {
 
     describe('getMachineAttendantRate (zyklischer Zweig, unveraendert seit Phase 7d)', () => {
         it('liefert eine Rate von 0 bei Musterkenntnis 0', () => {
-            const rate = getMachineAttendantRate(BEAT_LEDGER, 0, [], 1);
+            const rate = getMachineAttendantRate(CHAMPIONS_LEDGER, 0, [], 1);
             expect(rate.machinePointsPerSecond).toBe(0);
             expect(rate.hallTicketsPerSecond).toBe(0);
         });
 
         it('liefert eine positive Rate bei voller Musterkenntnis', () => {
-            const rate = getMachineAttendantRate(BEAT_LEDGER, 1, [], 1);
+            const rate = getMachineAttendantRate(CHAMPIONS_LEDGER, 1, [], 1);
             expect(rate.machinePointsPerSecond).toBeGreaterThan(0);
             expect(rate.hallTicketsPerSecond).toBeGreaterThan(0);
         });
 
         it('hallTicketsPerSecond skaliert mit ticketYieldFactor und dem hallenweiten ticketYieldRate-Parameter', () => {
-            const base = getMachineAttendantRate(BEAT_LEDGER, 1, [], 1);
-            const doubled = getMachineAttendantRate(BEAT_LEDGER, 1, [], 2);
+            const base = getMachineAttendantRate(CHAMPIONS_LEDGER, 1, [], 1);
+            const doubled = getMachineAttendantRate(CHAMPIONS_LEDGER, 1, [], 2);
             expect(doubled.hallTicketsPerSecond).toBeCloseTo(base.hallTicketsPerSecond * 2);
         });
 
         it('steigt mit gekauften Vorschau-Upgrades (mehr Tiefe/Praezision fuer den Attendant nutzbar)', () => {
-            const withoutUpgrades = getMachineAttendantRate(BEAT_LEDGER, 1, [], 1);
+            const withoutUpgrades = getMachineAttendantRate(CHAMPIONS_LEDGER, 1, [], 1);
             const withUpgrades = getMachineAttendantRate(
-                BEAT_LEDGER,
+                CHAMPIONS_LEDGER,
                 1,
-                [...BEAT_LEDGER.depthUpgrades.map((u) => u.id), ...BEAT_LEDGER.precisionUpgrades.map((u) => u.id)],
+                [...CHAMPIONS_LEDGER.depthUpgrades.map((u) => u.id), ...CHAMPIONS_LEDGER.precisionUpgrades.map((u) => u.id)],
                 1,
             );
             expect(withUpgrades.machinePointsPerSecond).toBeGreaterThan(withoutUpgrades.machinePointsPerSecond);

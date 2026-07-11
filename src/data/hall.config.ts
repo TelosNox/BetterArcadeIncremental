@@ -90,7 +90,7 @@ export function getTicketYieldRate(ownedHallUpgrades: readonly string[]): number
 // jetzt "Tickets" statt "Credits", siehe STATUS.md Phase 7d).
 const MACHINE_UNLOCK_COSTS: Readonly<Record<string, number>> = {
     'trap-tunnels': 50,
-    'beat-ledger': 150,
+    'boost-barrage': 150,
     'champions-ledger': 400,
 };
 

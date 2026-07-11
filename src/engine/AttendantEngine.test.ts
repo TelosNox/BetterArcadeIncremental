@@ -16,6 +16,9 @@ import {
     getAttendantLookahead,
     getAttendantMachinePointsRate,
     getAttendantPrecision,
+    getBoostBarrageAttendantExpectedValuePerEncounter,
+    getBoostBarrageAttendantMachinePointsRate,
+    getBoostBarrageBlindExpectedValuePerEncounter,
     getGridAttendantExpectedValuePerMove,
     getGridAttendantMachinePointsRate,
     getGridPerfectInfoExpectedValue,
@@ -24,7 +27,7 @@ import {
     getTrapTunnelsBlindExpectedValuePerTrap,
     type AttendantRate,
 } from './AttendantEngine';
-import type { CyclicActionDef, GridSectorConfig, TrapTunnelsRunConfig } from './types';
+import type { BoostBarrageRunConfig, CyclicActionDef, GridSectorConfig, TrapTunnelsRunConfig } from './types';
 
 // Handgebaute Fixture statt Import aus src/data/machines.config.ts -- die
 // Engine-Tests bleiben damit unabhaengig von der konkreten Automaten-
@@ -437,6 +440,75 @@ describe('AttendantEngine', () => {
 
         it('ist niemals negativ', () => {
             expect(getTrapTunnelsAttendantMachinePointsRate(trapTunnelsConfig, 1, 3, 2, 4, 4)).toBeGreaterThanOrEqual(0);
+        });
+    });
+
+    // Eigenstaendige Boost-Barrage-Fixture (Phase 7m, game-spec.md 4.4) --
+    // dieselbe Unabhaengigkeit von machines.config.ts wie oben.
+    const boostBarrageConfig: BoostBarrageRunConfig = {
+        waveCount: 5,
+        enemiesPerWave: 6,
+        enemyWeights: { scout: 65, bomber: 20, elite: 15 },
+        scoutPayoutRange: [3, 5],
+        bomberDestroyPayoutRange: [10, 16],
+        bomberHitCostRange: [8, 14],
+        elitePayoutRange: [18, 26],
+        baseBomberDestroyChance: 0.55,
+        baseEliteHitChance: 0.3,
+        escalationPerDestroyed: 0.03,
+        firepowerDestroyBonusPerLevel: 0.2,
+        firepowerScoutBonusPerLevel: 1,
+        shieldDamageReductionPerLevel: 0.3,
+        focusHitBonusPerLevel: 0.25,
+        evadeDurationBaseSteps: 1,
+        evadeDurationPerExtraLevel: 1,
+        baseWarningMs: 1500,
+        warningMsPerLevel: 750,
+    };
+
+    describe('getBoostBarrageBlindExpectedValuePerEncounter (Phase 7m, dokumentierte Vereinfachung)', () => {
+        it('ist positiv (Blind-EV-Garantie gilt auch fuer die geschlossene Naeherung, nicht nur die Simulation)', () => {
+            expect(getBoostBarrageBlindExpectedValuePerEncounter(boostBarrageConfig)).toBeGreaterThan(0);
+        });
+
+        it('ist 0 bei einer entarteten Config ohne jeden Gegner-Anteil', () => {
+            const zeroConfig: BoostBarrageRunConfig = { ...boostBarrageConfig, enemyWeights: { scout: 0, bomber: 0, elite: 0 } };
+            expect(getBoostBarrageBlindExpectedValuePerEncounter(zeroConfig)).toBe(0);
+        });
+    });
+
+    describe('getBoostBarrageAttendantExpectedValuePerEncounter', () => {
+        it('entspricht bei genutztem Ladungs-Kontingent 0 der Blind-EV', () => {
+            const ev = getBoostBarrageAttendantExpectedValuePerEncounter(boostBarrageConfig, 2, 0, 3);
+            expect(ev).toBeCloseTo(getBoostBarrageBlindExpectedValuePerEncounter(boostBarrageConfig));
+        });
+
+        it('steigt bei voll genutztem Ladungs-Kontingent gegenueber der Blind-EV (Perfekt-Info-Naeherung ist strikt besser)', () => {
+            const blind = getBoostBarrageBlindExpectedValuePerEncounter(boostBarrageConfig);
+            const perfect = getBoostBarrageAttendantExpectedValuePerEncounter(boostBarrageConfig, 2, 3, 3);
+            expect(perfect).toBeGreaterThan(blind);
+        });
+    });
+
+    describe('getBoostBarrageAttendantMachinePointsRate', () => {
+        it('ist 0 bei Musterkenntnis 0 (Effizienz 0)', () => {
+            expect(getBoostBarrageAttendantMachinePointsRate(boostBarrageConfig, 0, 2, 3)).toBe(0);
+        });
+
+        it('steigt mit der Musterkenntnis (mehr Effizienz UND mehr nutzbares Ladungs-Kontingent)', () => {
+            const low = getBoostBarrageAttendantMachinePointsRate(boostBarrageConfig, 0.2, 2, 3);
+            const high = getBoostBarrageAttendantMachinePointsRate(boostBarrageConfig, 0.9, 2, 3);
+            expect(high).toBeGreaterThan(low);
+        });
+
+        it('steigt mit der Boost-Staerke bei voller Musterkenntnis (bessere Perfekt-Info-EV)', () => {
+            const low = getBoostBarrageAttendantMachinePointsRate(boostBarrageConfig, 1, 1, 3);
+            const high = getBoostBarrageAttendantMachinePointsRate(boostBarrageConfig, 1, 3, 3);
+            expect(high).toBeGreaterThan(low);
+        });
+
+        it('ist niemals negativ', () => {
+            expect(getBoostBarrageAttendantMachinePointsRate(boostBarrageConfig, 1, 3, 3)).toBeGreaterThanOrEqual(0);
         });
     });
 });

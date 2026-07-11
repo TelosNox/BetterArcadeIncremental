@@ -4,8 +4,214 @@ Wird nach jeder abgeschlossenen Phase aktualiziert. Einzige Quelle der Wahrheit 
 
 ## Aktueller Stand
 
-**Zuletzt abgeschlossen:** Phase 7l (Trap Tunnels Fix: Fallenanzahl-/Dynamitanzahl-Upgrades wirken sofort im laufenden Run) — implementiert, alle automatisierten Checks grün, zusätzlich per Playwright-Skript visuell verifiziert, aber noch nicht vom Nutzer gespielt.
-**Läuft/als Nächstes:** Nutzer-Playtest für 7j/7k/7l gemeinsam abwarten (alle drei waren Korrekturen vor bzw. während des ersten echten Playtests von Trap Tunnels' neuem Kernmodell, noch nicht vom Nutzer selbst bestätigt). Danach voraussichtlich Beat Ledger oder Champion's Ledger als drittes Genre-Rework-Experiment, oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+**Zuletzt abgeschlossen:** Phase 7m (Boost Barrage Genre-Ersatz für Automat 3 — ersetzt den verworfenen "Beat Ledger"/DDR-Ansatz vollständig, game-spec.md 4.4) — implementiert, alle automatisierten Checks grün (391/391 Tests), zusätzlich per Playwright-Skript visuell verifiziert (mehrere Wellen inkl. Boost-Aktivierung, Wellenübergang, Meilenstein-Pip live beobachtet), aber noch nicht vom Nutzer gespielt.
+**Läuft/als Nächstes:** Nutzer-Playtest für Phase 7m abwarten (noch nicht vom Nutzer selbst bestätigt), außerdem weiterhin ausstehender Playtest für 7j/7k/7l (Trap Tunnels' neues Kernmodell). Danach voraussichtlich Champion's Ledger als letztes Genre-Rework-Experiment (einziger noch verbleibender Automat im alten gemeinsamen Zyklus-Modell), oder Balance-/Politur-Arbeit — noch nicht entschieden. Bekannte, weiterhin nicht behobene Punkte: Progression/Balance-Tuning bleibt zurückgestellt; Phase 8 (Politur) bleibt zurückgestellt.
+
+## NEUE PHASE 7m: Boost Barrage Genre-Ersatz fuer Automat 3 (2026-07-11, ersetzt den verworfenen "Beat Ledger"/DDR-Ansatz vollstaendig, mit Nutzer abgestimmt)
+
+Automat 3 hatte in `game-spec.md` bislang die Spezifikation "Beat Ledger"
+(DDR/Whac-a-Mole-Twist), wurde aber nie implementiert (blieb auf dem
+gemeinsamen Zyklus-Modell aus 4.1/4.1b/4.1c). Nutzer-Entscheidung: Beat
+Ledger wird komplett verworfen, BEVOR es gebaut wird — ein Rhythmusspiel
+lebt strukturell von Musik, und gute, abwechslungsreiche Musik ohne
+Lizenzkosten ist fuer dieses Projekt nicht leistbar (design-toolbox.md
+Abschnitt 2, "Genre-Versprechen brechen"). Eine Zwischenidee (Football-
+Manager-Spielzugplanung) wurde ebenfalls verworfen, da sie sich zu weit vom
+Arcade-Automaten-Gefuehl der anderen drei Automaten entfernt haette. Ersatz:
+"Boost Barrage", ein Autopilot-Space-Shooter (Space-Invaders-artige
+Gegner-Formation, Schiff kaempft automatisch, Spieler aktiviert begrenzte
+Boosts).
+
+Vollstaendige Spezifikation: `docs/game-spec.md` Abschnitt 4.4 (komplett neu
+geschrieben) — hier nur die Zusammenfassung fuer Claude Code:
+
+1. **Autopilot kaempft, Spieler boostet.** Kein Echtzeit-Reflex (Abschnitt 1)
+   — Aktivierungsfenster sind grosszuegig bemessen (mehrere Sekunden),
+   verpasstes Timing bedeutet suboptimale Nutzung, keine Katastrophe.
+2. **Feste Wellenanzahl pro Lauf (Richtwert 5), NICHT upgradebar.** Alle
+   Upgrades erhoehen ausschliesslich den Ertrag PRO Welle, nie deren Anzahl
+   — bewusste Design-Abweichung von Greed Runs Aktionsbudget-Achse, explizit
+   dokumentiert statt rueckwirkend angeglichen.
+3. **Drei Gegnertypen pro Welle (fest generiertes Roster):** Scout (haeufig,
+   schwach, vom Autopiloten zuverlaessig getroffen — traegt die Blind-EV-
+   Garantie), Bomber (selten, robuster, Flaechenangriff mit Blink-Warnung vor
+   dem Ausloesen), Elite (selten, hoher Punktwert, evasiv).
+4. **Vier Boosts mit eigenen Ladungen (Start je 1/Welle):** Feuerkraft
+   (Overcharge, erhoeht Zerstoerungschance/Bonus-Payout), Schild (reduziert
+   Bomber-Schaden anteilig), Ausweichen (negiert Bomber-Schaden vollstaendig),
+   Fokus (garantiert Treffer gegen Elite).
+5. **Eskalation innerhalb einer Welle:** je mehr Gegner bereits zerstoert
+   wurden, desto aggressiver werden die verbleibenden (senkt Bomber-
+   Zerstoerungschance/Elite-Trefferchance graduell).
+6. **Drei Upgrade-Achsen:** Vorschau/Vorwarnzeit, Boost-Staerke,
+   Ladungen/Cooldown.
+7. **Blind-Erwartungswert-Garantie** (automatisiert per Simulation): eine
+   komplette Welle OHNE jeden Boost-Einsatz bleibt im Schnitt positiv,
+   getragen von den zuverlaessig getroffenen Scouts.
+8. **Barrierefreiheit:** Gegnertypen (Kreis/Quadrat/Dreieck + Buchstabe S/B/E)
+   und Boost-Typen (Name + Farbe) je ueber Form/Text UND Farbe unterschieden.
+
+**Architektur-/Design-Entscheidung (Ermessen Claude Code, dokumentiert):**
+Die "Vorwarnzeit" aus game-spec.md 4.4 wurde bewusst als REINE UI-Timing-
+Groesse umgesetzt, nicht als Informations-Verbergungsmechanik wie die
+Vorschau-Achsen der anderen drei Automaten. Das komplette Wellen-Roster ist
+von Wellenbeginn an vollstaendig sichtbar (wie Trap Tunnels' Netz-Topologie
+seit Phase 7j) — die Vorwarnzeit-Upgrade-Leiter verlaengert stattdessen die
+Echtzeit-Verzoegerung, die `BoostBarrageScene.ts` vor jeder Gefechts-
+Aufloesung wartet (mehr Zeit zum Reagieren = "proaktives statt nur
+reaktives Boost-Timing", game-spec.md 4.4). Grund: game-spec.md 4.4
+beschreibt die Vorwarnzeit selbst explizit als Zeitspanne ("Richtwert 1
+Sekunde ... bis zu 3 Sekunden"), nicht als Informationsmenge — die Engine
+(`BoostBarrageEngine.ts`) kennt entsprechend ueberhaupt kein Zeitkonzept
+(Architektur-Kurzregel CLAUDE.md), nur `BoostBarrageScene.ts` liest
+`getWarningWindowMs()` fuer die Verzoegerung vor `resolveNextEncounter()`.
+Zweite bewusste Design-Entscheidung: Boost-Ladungen sind ein reines
+Welle-Budget (bei jeder neuen Welle auf `maxCharges` zurueckgesetzt), kein
+echter Cooldown-Timer innerhalb einer Welle — game-spec.md 4.4 nennt die
+Achse "Ladungen/Cooldown" als EINE kombinierte Achse ("haeufigere Boost-
+Nutzung pro Welle, ohne dass die Welle selbst laenger wuerde"), was mit
+einem festen Welle-Budget strukturell aequivalent und deutlich einfacher zu
+testen/balancieren ist als ein echtes Cooldown-Timing-System. Dritte
+Entscheidung: anders als Trap Tunnels' Phase-7l-Sonderfall wirken waehrend
+eines laufenden Laufs gekaufte Boost-Barrage-Upgrades bewusst erst ab dem
+NAECHSTEN Lauf (wie Greed Runs Aktionsbudget) — game-spec.md 4.4 nennt keine
+Live-Wirkungs-Korrektur fuer diesen Automaten, und `boostPowerLevel`/
+`maxCharges` sind `BoostBarrageEngine`-Konstruktor-Parameter, keine
+mutierbaren Felder wie `TrapTunnelsEngine.maxTraps`.
+
+**Bewusst NICHT Teil dieser Phase:** Loadout-Wahl (welche Boosts pro Lauf
+aktiv sind), weitere Boost-Typen, echte optionale manuelle Steuerung.
+Champion's Ledger bleibt unangetastet auf dem alten Zyklus-Modell.
+
+### Ergebnis: Phase 7m umgesetzt (2026-07-11)
+
+Reihenfolge wie in CLAUDE.md gefordert: Engine-Logik zuerst mit Vitest
+abgesichert (inkl. Blind-EV-Simulation), danach an eine eigene Phaser-Szene
+angebunden (analog zu GreedRunScene.ts/TrapTunnelsScene.ts).
+
+**`src/engine/types.ts`:** `CURRENT_SAVE_VERSION` 6 → 7 (Automat 3 wechselt
+von `kind: 'cyclic'` auf `kind: 'boostBarrage'`, die Automaten-id selbst
+wechselt von `'beat-ledger'` zu `'boost-barrage'` — eine komplett andere
+Mechanik verdient eine eigene id statt eine stale Rhythmus-Spiel-id
+weiterzutragen; alte `machineUpgrades`/`unlockedMachines`/
+`completedMachines`-Eintraege unter der alten id wuerden sonst ins Leere
+zeigen) — wie immer bewusst KEINE Migration, alte Saves werden beim Laden
+abgelehnt. Neue Typen `BoostBarrageRunConfig` (Roster-/Payout-/Eskalations-/
+Boost-Wirkungs-Parameter als EIN Bundle-Objekt, inkl. der reinen UI-Timing-
+Felder `baseWarningMs`/`warningMsPerLevel`, siehe Architektur-Entscheidung
+oben) und `BoostBarrageMachineConfig` (`kind: 'boostBarrage'`, `run` + drei
+Upgrade-Leitern `warningUpgrades`/`boostPowerUpgrades`/`chargeUpgrades`) —
+`MachineConfig` ist jetzt eine vierfache Union. `MachineUpgradeEffect` um
+`warningWindow`/`boostPower`/`boostCharges` erweitert.
+
+**`src/engine/BoostBarrageEngine.ts`+Test (neu, 27 Tests):** Komplett neues,
+framework-unabhaengiges Modul (kennt weder Phaser noch React noch
+`/src/data`). `generateWaveRoster` (gewichtete Zufallsziehung pro Slot,
+Scout dominiert deutlich). `resolveEncounter` (reine Funktion: Scout immer
+zerstoert inkl. optionalem Feuerkraft-Bonus; Bomber wuerfelt Zerstoerung-vor-
+Feuern gegen `destroyChance` — Eskalation senkt sie, Feuerkraft-Boost erhoeht
+sie, ein Treffer wird von Ausweichen VOLLSTAENDIG und von Schild nur
+ANTEILIG negiert; Elite wuerfelt Trefferchance — Fokus garantiert Treffer mit
+Bonus-Payout, ein Fehlschlag ist Payout 0 statt negativ). `computeBlindWave
+ExpectedValue` (Blind-EV-Garantie PER SIMULATION ueber viele Trials, exakt
+das in game-spec.md 4.4 geforderte Prinzip — mittelt ueber komplette Wellen
+OHNE jeden Boost-Einsatz, mit echten `Math.random()`-Trials verifiziert
+positiv). Klasse `BoostBarrageEngine` haelt den Zustand EINES kompletten
+Laufs (alle Wellen): Ladungen/aktive Boost-Dauer/Fortschritt innerhalb der
+Welle sind mutierender Zustand, `boostPowerLevel`/`maxCharges` bleiben fuer
+den gesamten Lauf fest (Architektur-Entscheidung oben). `activateBoost`
+verbraucht eine Ladung und macht den Boost fuers naechste Gefecht wirksam
+(Ausweichen deckt bei hoeherer Boost-Staerke mehrere aufeinanderfolgende
+Gefechte ab). `resolveNextEncounter` loest genau ein Gefecht auf und laesst
+aktive Boost-Dauern abklingen; wird dabei die letzte Welle komplett, gilt der
+Lauf automatisch als beendet. Tests decken Roster-Gewichtung/Determinismus,
+alle drei Gefechtstypen (inkl. Eskalations- und Boost-Effekte einzeln
+isoliert per konstantem rng), die Blind-EV-Simulation, Konstruktor-
+Validierung, Ladungs-/Aktivierungs-Verhalten (inkl. Ausweichen-Mehrfach-
+Abdeckung) sowie den kompletten Wellen-/Lauf-Fortschritt inkl. aller
+Fehlerfaelle (Aufloesen nach Wellenende, `startNextWave` vor Wellenende,
+jede Operation nach Lauf-Ende) ab.
+
+**`src/engine/AttendantEngine.ts`+Test (+9 Tests, dokumentierte
+Vereinfachung wie in game-spec.md 4.4 gefordert):** Neue Funktionen
+`getBoostBarrageBlindExpectedValuePerEncounter`/`getBoostBarrageAttendant
+ExpectedValuePerEncounter`/`getBoostBarrageAttendantMachinePointsRate` —
+dieselbe Interpolations-IDEE wie bei den anderen drei Automaten (linear
+zwischen Blind-EV und einer Perfekt-Info-Naeherung ohne echtes Ladungs-/
+Timing-Management, gewichtet mit dem ueber `getAttendantLookahead`
+skalierten, vom Attendant nutzbaren Ladungs-Kontingent), aber als
+geschlossene Naeherung statt Monte-Carlo-Simulation (fuer den bei jedem Tick
+aufgerufenen Ertragsraten-Pfad zu teuer — die Simulation in
+`BoostBarrageEngine.ts` bleibt bewusst nur ein Test-Werkzeug fuer die
+Blind-EV-GARANTIE, siehe Datei-Kommentar dort).
+
+**`src/data/machines.config.ts`+Test:** `BEAT_LEDGER`-Konstante durch
+`BOOST_BARRAGE: BoostBarrageMachineConfig` ersetzt (id `'boost-barrage'`,
+Name "Boost Barrage", `theme: 'space-shooter-twist'`). Neue Farbpaletten
+`ENEMY_TYPE_COLORS`/`ENEMY_TYPE_LABELS`/`BOOST_COLORS` (Okabe-Ito-Teilmenge,
+CLAUDE.md-Barrierefreiheits-Grundsatz: Gegner zusaetzlich ueber FORM
+unterschieden, Boosts zusaetzlich ueber Namenstext). Neue Upgrade-Builder
+`buildWarningUpgrades`/`buildBoostPowerUpgrades`/`buildChargeUpgrades` +
+Getter `getWarningLevel`/`getWarningWindowMs`/`getBoostPowerLevel`/
+`getMaxBoostCharges`/`getBoostBarrageMachineUpgrade` (bewusst KEINE
+Kreuz-Preis-Kopplung, wie bei Grid-/Trap-Tunnels-Automat). Basiszahlen:
+6 Gegner/Welle (65 % Scout/20 % Bomber/15 % Elite), 5 Wellen/Lauf,
+Meilensteine 30/70/140 und `ticketYieldFactor` ~0.845 (Skalierungsfaktor 1.4)
+unveraendert aus der bisherigen Automat-3-Groessenordnung uebernommen.
+`getMachineAttendantRate`s neuer `boostBarrage`-Zweig ruft entsprechend auf.
+`CYCLIC_MACHINES` in den Tests schrumpft auf `[CHAMPIONS_LEDGER]` (einziger
+verbleibender Automat im alten Zyklus-Modell) — ein nur noch fuer 1 Element
+sinnloser Vergleichstest wurde entfernt, alle anderen Zyklus-spezifischen
+Tests laufen jetzt ueber `CHAMPIONS_LEDGER`. Neuer Testblock "Boost Barrage"
+(Roster-/Payout-Plausibilitaet, Blind-EV-Simulation, Meilenstein-/
+Ticket-Yield-Werte, alle drei Upgrade-Leitern samt Getter-Deckelung,
+Farbpaletten) sowie "getMachineAttendantRate (Boost-Barrage-Zweig)".
+
+**`src/data/hall.config.ts`:** `MACHINE_UNLOCK_COSTS`-Schluessel
+`'beat-ledger'` → `'boost-barrage'` (Kosten 150 Tickets unveraendert).
+
+**`src/game/sceneRouting.ts`:** `getSceneKeyForMachine` routet
+`BOOST_BARRAGE.id` neu auf den Szenen-Key `'BoostBarrage'`.
+
+**`src/game/scenes/BoostBarrageScene.ts`(neu) + `src/game/main.ts`:** Neue
+Szene, in der Phaser-Scene-Liste registriert. Kontinuierliche
+Gefechts-Schleife (`runLoop`) ohne gesonderte Planungsphase (game-spec.md
+4.4 "Rundenstruktur"): zeigt das komplette, fest generierte Wellen-Roster als
+Reihe von Formen (Scout=Kreis/Bomber=Quadrat/Elite=Dreieck, aktuelles
+Gefecht weiss umrandet, bereits aufgeloeste Gegner abgedunkelt), Bomber
+bekommt zusaetzlich zur Form eine Blink-Tween-Warnung waehrend er das
+aktuelle Gefecht ist (mit `dynamicTweens`-Tracking, das `clearDynamic()` vor
+dem Zerstoeren der Ziel-Objekte stoppt). Boost-Buttons bleiben durchgehend
+klickbar (Ladung wird sofort verbraucht, wirkt aufs naechste
+`resolveNextEncounter()`); nach `getWarningWindowMs(...)` Echtzeit-
+Verzoegerung wird das Gefecht aufgeloest, Punkte/Tickets verbucht, Feedback-
+Text aktualisiert. Wellenuebergang/Lauf-Ende wie bei Trap Tunnels/Greed Run:
+nach der letzten Welle startet sofort automatisch ein neuer Lauf, keine
+Checkbox/kein Popup. Upgrade-Shop mit drei Leitern (y=560/620/680, gleiches
+Muster wie die anderen Szenen).
+
+**Verifiziert:** `npm test` (**391/391 gruen**, vorher 350 vor dieser Phase),
+`npm run lint` sauber, `npx tsc --noEmit` sauber, `npm run build-nolog`
+erfolgreich. Zusaetzlich per Playwright-Skript gegen `npm run dev-nolog`
+(Skript + temporaere Playwright-Installation danach wieder vollstaendig
+entfernt, nicht Teil des Repos/package.json) mit Screenshots visuell
+geprueft: vorbereiteter Speicherstand (Greed Run durchgespielt,
+Boost Barrage freigeschaltet) zeigt die Halle korrekt, Klick auf "Spielen"
+laedt `BoostBarrageScene` ohne Konsolenfehler; erste Welle zeigt alle 6
+Roster-Positionen nebeneinander ohne Ueberlappung mit der Legende (nach
+einer Nachbesserung — die urspruengliche Positionierung liess die letzte
+Roster-Position hinter den Legendentext ragen, per Screenshot entdeckt und
+korrigiert, ebenso eine zweite Ueberlappung von Statustext und Upgrade-Shop);
+Klick auf den Feuerkraft-Button zeigte sofort "AKTIV" + "Ladungen: 0" und
+grauen (nicht mehr klickbaren) Button; nach ~15s Beobachtungszeit lief die
+Simulation sichtbar durch mehrere Gefechte einer Welle (Scout/Bomber
+zerstoert mit plausiblen Punkte-/Ticket-Werten im Feedback-Text) bis zum
+Wellenuebergang (Welle 2/5, Ladungen aller vier Boosts korrekt auf 1/1
+zurueckgesetzt, neues Roster generiert, erster Meilenstein-Pip bereits gelb
+gefuellt nach Ueberschreiten der 30-Punkte-Schwelle). Keine Konsolenfehler
+ueber den gesamten Testlauf. **Noch nicht vom Nutzer selbst gespielt/
+bestaetigt** — das ist der naechste Schritt, kein automatisierter Ersatz
+dafuer.
 
 ## NEUE PHASE 7l: Trap Tunnels Fix — Fallenanzahl-/Dynamitanzahl-Upgrades wirken sofort im laufenden Run (2026-07-10, Nutzer-Feedback)
 
