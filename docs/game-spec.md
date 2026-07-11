@@ -320,6 +320,15 @@ mehr selbst auswerten. Verbindliche Korrekturen:
 
 - **Warum stimmiger Ersatz für den verworfenen Beat-Ledger-Ansatz:** Space-Shooter ist archetypisch für "Arcade-Automat", braucht keine Musik-Abwechslung zum Funktionieren, und die Autopilot-plus-Boost-Struktur überträgt das Attendant-Prinzip (Baukasten 1.9) besonders natürlich, da die manuelle Kernmechanik selbst schon aus zeitlich großzügigen Aktivierungs-Entscheidungen statt Dauersteuerung besteht.
 
+**Visuelle Umsetzung (Korrektur nach Playtest-Screenshot, 2026-07-11, verbindlich):** Die erste Umsetzung (Phase 7m) erfüllte die Mechanik korrekt, vermittelte aber visuell keinen Weltraum-Shooter — eine flache horizontale Icon-Reihe mit Textfeedback darunter, ohne erkennbares Spielerschiff, Anflugrichtung, Kampf-Feedback oder Weltraum-Kulisse; könnte optisch genauso gut eine beliebige Icon-Liste sein. Nachbesserung, weiterhin ausschließlich mit Phaser-Grafik-Primitiven (CLAUDE.md: keine Bild-/Sound-Assets bis einschließlich Phase 8) — es geht um Anordnung/Bewegung/Feedback, nicht um Assets:
+
+1. **Spielerschiff sichtbar:** Eine einfache Dreiecks-/Pfeilform am unteren Bildschirmrand repräsentiert das eigene Schiff, gegen das die Formation antritt — bisher fehlte jede Spielerschiff-Darstellung komplett.
+2. **Formation statt Liste:** Gegner werden nicht mehr als flache horizontale Reihe dargestellt, sondern entweder als echte Formation (mehrere Reihen/Spalten, Space-Invaders-artig) oder mit sichtbarer Anflugbewegung (Icons rücken pro aufgelöstem Gefecht sichtbar näher/größer Richtung Schiff) — Ziel: erkennbare räumliche Tiefe/Anflug statt statischer Aufzählung.
+3. **Kampf-Feedback pro Gefecht:** Sichtbarer Schuss-Effekt (z. B. kurze Linie/Partikel vom Schiff zum Ziel) beim Auflösen eines Gefechts, Explosions-Flash bei Zerstörung, sichtbar unterschiedliche Effekte für "zerstört"/"Bomber trifft"/"Elite entkommt" — nicht nur im Feedback-Text, auch am Icon selbst (kurzer Blitz/Partikel-Burst statt nur Alpha-Abdunkelung wie bisher).
+4. **Weltraum-Kulisse:** Einfaches Sternfeld im Hintergrund (z. B. 60–100 zufällig positionierte kleine Kreise unterschiedlicher Helligkeit/Größe), rein über `this.add.circle` erzeugt, kein Asset nötig.
+
+Ausdrücklich KEIN Asset-Bedarf und KEINE Änderung an Mechanik/Engine (`BoostBarrageEngine.ts` bleibt vollständig unangetastet) — reine Überarbeitung von `BoostBarrageScene.ts`s Darstellungsschicht.
+
 ### 4.5 Automat 4 — "Champion's Ledger" (Street-Fighter-Twist)
 
 - **Thema:** Angriffs-/Block-/Konter-Tokens werden vorab gegen einen Gegner mit rotierendem Verhaltens-Zyklus geplant
