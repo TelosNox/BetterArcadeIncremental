@@ -56,15 +56,90 @@ const FORMATION_ORIGIN = { x: 380, y: 205 };
 const FORMATION_MAX_COLUMNS = 3;
 const FORMATION_COL_SPACING = 110;
 const FORMATION_ROW_SPACING = 68;
-const ROSTER_ICON_RADIUS = 18;
+
+// Auswahl-Rahmen ums aktuelle Gefecht -- Konstante statt aus einem Icon-
+// Radius abgeleitet, da die Sprite-Silhouetten (siehe unten) je nach Typ
+// unterschiedlich breit sind (Bomber/Elite bis 56px), der Rahmen aber fuer
+// alle drei gleich gross bleiben soll.
+const SELECTION_MARKER_SIZE = 66;
 
 // Eigenes Schiff (game-spec.md 4.4 "Visuelle Umsetzung" Punkt 1) -- feste
 // Position in derselben Formations-Spalte, dient als Ausgangspunkt fuer den
 // Schuss-Effekt und als Ziel, wenn ein Bomber trifft.
 const SHIP_POSITION = { x: FORMATION_ORIGIN.x, y: 370 };
-const SHIP_SIZE = 22;
 
 const STAR_COUNT = 80;
+
+// --- Sprite-/Textur-Set (game-spec.md 4.4 "Visuelle Umsetzung", zweite ------
+// Playtest-Korrektur 2026-07-11; CLAUDE.md "Ausnahme Automat 3") ------------
+// Bewusste, eng auf diesen Automaten begrenzte Ausnahme von der Primitive-
+// Only-Regel: Spielerschiff, Schuss-/Laser-Effekt, Explosion und drei Gegner-
+// Silhouetten (Scout/Bomber/Elite). Technik-Entscheidung: Texturen werden zur
+// LAUFZEIT aus Phaser-Graphics-Polygonen gebacken (this.make.graphics(...)
+// .generateTexture(...)), NICHT als mitgelieferte SVG-/Bild-Dateien -- so
+// bleibt alles versioniertem TypeScript-Code (kein neuer Binaer-Asset-
+// Ladepfad, kein Fehlerfall fuer fehlende Dateien) und laesst sich wie die
+// bisherigen Graphics-Primitive direkt mit Werten aus machines.config.ts
+// (Farben) parametrisieren. Alle Punktlisten sind bewusst so gewaehlt, dass
+// ihre Bounding-Box exakt auf der Canvas-Mitte zentriert ist (siehe Kommentar
+// an ensureTextures()) -- sonst wuerde `setOrigin(0.5)` das Sprite sichtbar
+// neben der eigentlichen Formations-/Ziel-Position platzieren.
+const TEX_SCOUT_SIZE = { width: 40, height: 44 };
+const TEX_BOMBER_SIZE = { width: 56, height: 48 };
+const TEX_ELITE_SIZE = { width: 56, height: 48 };
+const TEX_SHIP_SIZE = { width: 48, height: 56 };
+const TEX_LASER_SIZE = { width: 64, height: 16 };
+const TEX_EXPLOSION_SIZE = { width: 72, height: 72 };
+
+// Schlanke, kleine Silhouette -- haeufigster, schwaechster Gegnertyp.
+const SCOUT_POINTS: Phaser.Types.Math.Vector2Like[] = [
+    { x: 20, y: 4 },
+    { x: 34, y: 40 },
+    { x: 20, y: 30 },
+    { x: 6, y: 40 },
+];
+// Boxige, breite Silhouette mit stumpfer Nase -- robuster Flaechenangriff-Typ.
+const BOMBER_POINTS: Phaser.Types.Math.Vector2Like[] = [
+    { x: 20, y: 4 },
+    { x: 36, y: 4 },
+    { x: 36, y: 14 },
+    { x: 52, y: 24 },
+    { x: 36, y: 34 },
+    { x: 36, y: 44 },
+    { x: 20, y: 44 },
+    { x: 20, y: 34 },
+    { x: 4, y: 24 },
+    { x: 20, y: 14 },
+];
+// Angulare Pfeilform mit weit ausgestellten Fluegeln und Heckspitze -- selten,
+// wertvoll, evasiv.
+const ELITE_POINTS: Phaser.Types.Math.Vector2Like[] = [
+    { x: 28, y: 4 },
+    { x: 34, y: 20 },
+    { x: 52, y: 32 },
+    { x: 30, y: 26 },
+    { x: 28, y: 44 },
+    { x: 26, y: 26 },
+    { x: 4, y: 32 },
+    { x: 22, y: 20 },
+];
+// Interzeptor-Silhouette mit Doppelheck -- unterscheidet sich bewusst von
+// allen drei Gegnerformen.
+const SHIP_POINTS: Phaser.Types.Math.Vector2Like[] = [
+    { x: 24, y: 4 },
+    { x: 36, y: 26 },
+    { x: 28, y: 38 },
+    { x: 32, y: 52 },
+    { x: 16, y: 52 },
+    { x: 20, y: 38 },
+    { x: 12, y: 26 },
+];
+
+const ENEMY_TEXTURE_KEYS: Readonly<Record<'scout' | 'bomber' | 'elite', string>> = {
+    scout: 'bb-scout',
+    bomber: 'bb-bomber',
+    elite: 'bb-elite',
+};
 
 const BOOST_LABELS: Readonly<Record<BoostBarrageBoostType, string>> = {
     firepower: 'Feuerkraft',
@@ -95,7 +170,7 @@ export class BoostBarrageScene extends Scene {
     // Statisches Spielerschiff (game-spec.md 4.4 "Visuelle Umsetzung" Punkt 1)
     // -- bleibt ueber die gesamte Szenen-Lebensdauer bestehen, wird NICHT ueber
     // clearDynamic() entfernt, nur kurz angeflackert bei einem Bomber-Treffer.
-    private shipShape!: Phaser.GameObjects.Triangle;
+    private shipShape!: Phaser.GameObjects.Image;
 
     constructor() {
         super('BoostBarrage');
@@ -118,6 +193,7 @@ export class BoostBarrageScene extends Scene {
 
     create(): void {
         economyStore.unlockMachine(this.config.id);
+        this.ensureTextures();
         this.cameras.main.setBackgroundColor(0x101018);
         this.renderStarfield();
 
@@ -214,11 +290,94 @@ export class BoostBarrageScene extends Scene {
 
     private renderShip(): void {
         const { x, y } = SHIP_POSITION;
-        // Gleiche Punkt-Konvention wie die Elite-Dreiecksform in
-        // drawEnemyIcon() (Spitze zeigt nach oben Richtung Formation).
-        this.shipShape = this.add
-            .triangle(x, y, 0, SHIP_SIZE, SHIP_SIZE, -SHIP_SIZE, SHIP_SIZE * 2, SHIP_SIZE, 0xdcdcdc)
-            .setStrokeStyle(2, 0x4fd1ff);
+        this.shipShape = this.add.image(x, y, 'bb-ship').setOrigin(0.5);
+    }
+
+    // --- Sprite-/Textur-Erzeugung (siehe Kommentar beim Sprite-Set oben) -----
+
+    // Baeckt alle sechs Texturen genau EINMAL pro Game-Instanz -- der Guard
+    // ueber `textures.exists()` verhindert erneutes Backen bei jedem Szenen-
+    // Neustart (neuer Lauf/Automat-Wechsel-und-zurueck erzeugt dieselbe Szene
+    // wiederholt, die Phaser-TextureManager-Registry ueberlebt das aber).
+    private ensureTextures(): void {
+        if (this.textures.exists('bb-ship')) return;
+        this.bakeSilhouette('bb-scout', SCOUT_POINTS, TEX_SCOUT_SIZE);
+        this.bakeSilhouette('bb-bomber', BOMBER_POINTS, TEX_BOMBER_SIZE);
+        this.bakeSilhouette('bb-elite', ELITE_POINTS, TEX_ELITE_SIZE);
+        this.bakeShipTexture();
+        this.bakeLaserTexture();
+        this.bakeExplosionTexture();
+    }
+
+    // Neutrale weisse Silhouette mit schwarzem Rand -- wird beim Platzieren
+    // per setTint(getEnemyTypeColor(...)) eingefaerbt. Tint ist multiplikativ,
+    // der schwarze Rand (0x000000 * jede Farbe = 0x000000) bleibt dabei immer
+    // schwarz, exakt wie zuvor die feste `.setStrokeStyle(2, 0x000000)` auf
+    // den Primitive-Shapes.
+    private bakeSilhouette(key: string, points: Phaser.Types.Math.Vector2Like[], size: { width: number; height: number }): void {
+        const g = this.make.graphics({ x: 0, y: 0 }, false);
+        g.fillStyle(0xffffff, 1);
+        g.fillPoints(points, true);
+        g.lineStyle(2, 0x000000, 0.85);
+        g.strokePoints(points, true, true);
+        g.generateTexture(key, size.width, size.height);
+        g.destroy();
+    }
+
+    private bakeShipTexture(): void {
+        const g = this.make.graphics({ x: 0, y: 0 }, false);
+        // Triebwerks-Glow zuerst (liegt hinter dem Rumpf).
+        g.fillStyle(0x4fd1ff, 0.55);
+        g.fillEllipse(24, 48, 16, 14);
+        g.fillStyle(0xdcdcdc, 1);
+        g.fillPoints(SHIP_POINTS, true);
+        g.lineStyle(2, 0x4fd1ff, 1);
+        g.strokePoints(SHIP_POINTS, true, true);
+        g.generateTexture('bb-ship', TEX_SHIP_SIZE.width, TEX_SHIP_SIZE.height);
+        g.destroy();
+    }
+
+    // Neutraler, weisser Leucht-Bolzen (drei ueberlagerte Ellipsen fuer einen
+    // weichen Glow-zu-Kern-Verlauf) -- wird pro Gefechts-Ausgang unterschied-
+    // lich eingefaerbt (siehe fireShotLine()) und beim Platzieren per
+    // setDisplaySize() auf die tatsaechliche Schuss-Distanz gestreckt.
+    private bakeLaserTexture(): void {
+        const { width, height } = TEX_LASER_SIZE;
+        const cx = width / 2;
+        const cy = height / 2;
+        const g = this.make.graphics({ x: 0, y: 0 }, false);
+        g.fillStyle(0xffffff, 0.25);
+        g.fillEllipse(cx, cy, width - 4, height - 2);
+        g.fillStyle(0xffffff, 0.6);
+        g.fillEllipse(cx, cy, width - 20, height - 8);
+        g.fillStyle(0xffffff, 1);
+        g.fillEllipse(cx, cy, width - 38, height - 12);
+        g.generateTexture('bb-laser', width, height);
+        g.destroy();
+    }
+
+    // Sternfoermiger Blitz (Glow-Kreis + gezackter Burst + hell gluehender
+    // Kern) -- nur fuer den "zerstoert"-Fall, daher bereits fest eingefaerbt
+    // statt neutral+tintbar.
+    private bakeExplosionTexture(): void {
+        const { width } = TEX_EXPLOSION_SIZE;
+        const center = width / 2;
+        const g = this.make.graphics({ x: 0, y: 0 }, false);
+        g.fillStyle(0xffd700, 0.35);
+        g.fillCircle(center, center, center - 2);
+        const spikePoints: Phaser.Types.Math.Vector2Like[] = [];
+        const spikeCount = 10;
+        for (let i = 0; i < spikeCount * 2; i += 1) {
+            const radius = i % 2 === 0 ? center - 10 : center - 24;
+            const angle = (Math.PI * i) / spikeCount;
+            spikePoints.push({ x: center + Math.cos(angle) * radius, y: center + Math.sin(angle) * radius });
+        }
+        g.fillStyle(0xffffff, 0.9);
+        g.fillPoints(spikePoints, true);
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(center, center, 8);
+        g.generateTexture('bb-explosion', width, width);
+        g.destroy();
     }
 
     // --- Statische Legende (einmalig, game-spec.md 4.4 + CLAUDE.md ---------
@@ -230,19 +389,19 @@ export class BoostBarrageScene extends Scene {
         this.add.text(x, y, 'Gegner:', { fontFamily: 'Arial', fontSize: 13, color: '#999999' });
         y += 24;
 
-        this.add.circle(x + 10, y, 9, getEnemyTypeColor('scout')).setStrokeStyle(1, 0x000000);
+        this.add.image(x + 10, y, 'bb-scout').setTint(getEnemyTypeColor('scout')).setDisplaySize(20, 22);
         this.add.text(x + 10, y, getEnemyTypeLabel('scout'), { fontFamily: 'Arial Black', fontSize: 9, color: '#000000' }).setOrigin(0.5);
-        this.add.text(x + 26, y, 'Scout (Kreis, zuverlaessig getroffen)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
+        this.add.text(x + 26, y, 'Scout (schlank, zuverlaessig getroffen)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
         y += 24;
 
-        this.add.rectangle(x + 10, y, 16, 16, getEnemyTypeColor('bomber')).setStrokeStyle(1, 0x000000);
+        this.add.image(x + 10, y, 'bb-bomber').setTint(getEnemyTypeColor('bomber')).setDisplaySize(22, 19);
         this.add.text(x + 10, y, getEnemyTypeLabel('bomber'), { fontFamily: 'Arial Black', fontSize: 9, color: '#000000' }).setOrigin(0.5);
-        this.add.text(x + 26, y, 'Bomber (Quadrat, blinkt vor Feuern)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
+        this.add.text(x + 26, y, 'Bomber (boxig, blinkt vor Feuern)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
         y += 24;
 
-        this.add.triangle(x + 10, y, 0, 10, 9, -9, 18, 10, getEnemyTypeColor('elite')).setStrokeStyle(1, 0x000000);
-        this.add.text(x + 10, y + 1, getEnemyTypeLabel('elite'), { fontFamily: 'Arial Black', fontSize: 9, color: '#000000' }).setOrigin(0.5);
-        this.add.text(x + 26, y, 'Elite (Dreieck, evasiv)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
+        this.add.image(x + 10, y, 'bb-elite').setTint(getEnemyTypeColor('elite')).setDisplaySize(22, 19);
+        this.add.text(x + 10, y, getEnemyTypeLabel('elite'), { fontFamily: 'Arial Black', fontSize: 9, color: '#000000' }).setOrigin(0.5);
+        this.add.text(x + 26, y, 'Elite (Pfeilform, evasiv)', { fontFamily: 'Arial', fontSize: 12, color: '#cccccc' }).setOrigin(0, 0.5);
         y += 32;
 
         this.add.text(x, y, 'Boosts:', { fontFamily: 'Arial', fontSize: 13, color: '#999999' });
@@ -272,35 +431,17 @@ export class BoostBarrageScene extends Scene {
         };
     }
 
-    private drawEnemyIcon(x: number, y: number, type: 'scout' | 'bomber' | 'elite', dimmed: boolean): Phaser.GameObjects.Shape {
+    private drawEnemyIcon(x: number, y: number, type: 'scout' | 'bomber' | 'elite', dimmed: boolean): Phaser.GameObjects.Image {
         const color = getEnemyTypeColor(type);
         const alpha = dimmed ? 0.35 : 1;
-        let shape: Phaser.GameObjects.Shape;
-        if (type === 'scout') {
-            shape = this.add.circle(x, y, ROSTER_ICON_RADIUS, color);
-        } else if (type === 'bomber') {
-            shape = this.add.rectangle(x, y, ROSTER_ICON_RADIUS * 1.7, ROSTER_ICON_RADIUS * 1.7, color);
-        } else {
-            shape = this.add.triangle(
-                x,
-                y,
-                0,
-                ROSTER_ICON_RADIUS,
-                ROSTER_ICON_RADIUS,
-                -ROSTER_ICON_RADIUS,
-                ROSTER_ICON_RADIUS * 2,
-                ROSTER_ICON_RADIUS,
-                color,
-            );
-        }
-        shape.setStrokeStyle(2, 0x000000).setAlpha(alpha);
-        this.dynamicObjects.push(shape);
+        const image = this.add.image(x, y, ENEMY_TEXTURE_KEYS[type]).setTint(color).setAlpha(alpha);
+        this.dynamicObjects.push(image);
         const label = this.add
             .text(x, y, getEnemyTypeLabel(type), { fontFamily: 'Arial Black', fontSize: 12, color: '#000000' })
             .setOrigin(0.5)
             .setAlpha(alpha);
         this.dynamicObjects.push(label);
-        return shape;
+        return image;
     }
 
     private renderRoster(): void {
@@ -315,7 +456,7 @@ export class BoostBarrageScene extends Scene {
 
             if (isCurrent) {
                 const marker = this.add
-                    .rectangle(x, y, ROSTER_ICON_RADIUS * 2 + 14, ROSTER_ICON_RADIUS * 2 + 14)
+                    .rectangle(x, y, SELECTION_MARKER_SIZE, SELECTION_MARKER_SIZE)
                     .setStrokeStyle(3, 0xffffff);
                 this.dynamicObjects.push(marker);
 
@@ -379,22 +520,34 @@ export class BoostBarrageScene extends Scene {
     // naechsten renderPhase()-clearDynamic() wieder entfernt -- bewusst KEINE
     // eigene Aufraeum-Logik noetig.
 
+    // Laser-Sprite statt Linien-Primitiv (game-spec.md 4.4 "Schuss-/Laser-
+    // Effekt") -- auf die Schuss-Distanz gestreckt (setDisplaySize) und um den
+    // Schusswinkel rotiert, dieselbe neutrale Textur wird per Tint pro
+    // Gefechts-Ausgang unterschiedlich eingefaerbt (aufgerufen mit Gold/Rot/
+    // Silber, siehe playCombatEffect()).
     private fireShotLine(from: { x: number; y: number }, to: { x: number; y: number }, color: number): void {
-        const line = this.add.line(0, 0, from.x, from.y, to.x, to.y, color).setOrigin(0, 0).setLineWidth(3);
-        this.dynamicObjects.push(line);
-        const tween = this.tweens.add({ targets: line, alpha: 0, duration: 450, delay: 120 });
+        const angle = Phaser.Math.Angle.Between(from.x, from.y, to.x, to.y);
+        const distance = Phaser.Math.Distance.Between(from.x, from.y, to.x, to.y);
+        const bolt = this.add
+            .image((from.x + to.x) / 2, (from.y + to.y) / 2, 'bb-laser')
+            .setTint(color)
+            .setRotation(angle)
+            .setDisplaySize(Math.max(distance, TEX_LASER_SIZE.width), TEX_LASER_SIZE.height);
+        this.dynamicObjects.push(bolt);
+        const tween = this.tweens.add({ targets: bolt, alpha: 0, duration: 450, delay: 120 });
         this.dynamicTweens.push(tween);
     }
 
-    // "Zerstoert" -- heller Blitz + expandierender Ring, farblich UND formal
-    // (gefuellt vs. Ring) unterscheidbar vom Ausweich-Effekt unten.
+    // "Zerstoert" -- Explosions-Sprite (game-spec.md 4.4) + expandierender
+    // Ring, farblich UND formal (gefuellter Burst vs. reiner Ring) unter-
+    // scheidbar vom Ausweich-Effekt unten.
     private spawnExplosion(pos: { x: number; y: number }): void {
-        const flash = this.add.circle(pos.x, pos.y, 10, 0xffffff);
+        const burst = this.add.image(pos.x, pos.y, 'bb-explosion').setScale(0.5);
         const ring = this.add.circle(pos.x, pos.y, 10).setStrokeStyle(3, 0xffd700);
-        this.dynamicObjects.push(flash, ring);
-        const flashTween = this.tweens.add({ targets: flash, scale: 0.2, alpha: 0, duration: 350 });
+        this.dynamicObjects.push(burst, ring);
+        const burstTween = this.tweens.add({ targets: burst, scale: 1.5, alpha: 0, duration: 400 });
         const ringTween = this.tweens.add({ targets: ring, scale: 2.6, alpha: 0, duration: 450 });
-        this.dynamicTweens.push(flashTween, ringTween);
+        this.dynamicTweens.push(burstTween, ringTween);
     }
 
     // "Bomber trifft" -- Einschlag-Burst am Schiff plus kurzes Anflackern des
