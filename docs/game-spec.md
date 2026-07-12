@@ -329,6 +329,15 @@ mehr selbst auswerten. Verbindliche Korrekturen:
 
 **Bewusst unverändert:** `BoostBarrageEngine.ts`, alle drei Upgrade-Achsen, die Blind-Erwartungswert-Garantie und das "Boosts sind optional, nie zwingend"-Prinzip — reine Überarbeitung von `BoostBarrageScene.ts`s Darstellungsschicht plus neuer Sprite-/Textur-Erzeugung. Technik zur Sprite-Erzeugung (z. B. zur Laufzeit generierte Canvas-Texturen vs. mitgelieferte einfache SVG-Dateien) im Ermessen von Claude Code, siehe CLAUDE.md.
 
+**Bewegungs-/Kampf-Animation (verschärfte Korrektur nach viertem Playtest, 2026-07-11, verbindlich, ERSETZT die vorherige Fassung vollständig):** Die dritte Korrekturrunde (einfacher Laser-/Gegenfeuer-Flug, Ruhebewegung) reichte laut Playtest immer noch nicht. Nutzer-Vorgabe: am tatsächlichen Genre-Vorbild orientieren statt an abstrakten Animations-Häkchen. Recherche zu Space Invaders/Galaga/Galaxian ergab konkrete, gut übertragbare Signatur-Elemente — weiterhin reine Animations-/Darstellungsschicht in `BoostBarrageScene.ts`, KEINE Spieler-Steuerung, keine Engine-Änderung:
+
+1. **Formation als starrer, gemeinsam bewegter Block (Space-Invaders-Signatur):** Die gesamte noch nicht aufgelöste Formation bewegt sich synchron als EINE Einheit seitwärts, prallt am Bildschirmrand ab, kehrt dabei die Richtung um und rückt bei jedem Abprallen sichtbar ein Stück näher zum Schiff. Bewegungstempo der Formation steigt mit fortschreitender Eskalation (game-spec.md 4.4 "Eskalation") — koppelt die bereits in der Engine vorhandene Eskalation an ein sofort erkennbares visuelles Signal, exakt wie im Original (dort beschleunigt sich die Formation ebenfalls, je weniger Gegner übrig sind).
+2. **Einflug-Choreografie bei Wellenbeginn (Galaga-Signatur):** Gegner erscheinen nicht einfach an ihrer Formationsposition, sondern fliegen zu Wellenbeginn sichtbar von außerhalb des Bildschirms ein (Schwungbahn) und ordnen sich in die Formation ein, bevor das erste Gefecht startet.
+3. **Sturzangriff des aktuell aufgelösten Gegners (Galaga/Galaxian-Signatur):** Statt nur eine Markierung um den "aktuellen" Gegner zu zeigen, löst sich genau dieser sichtbar aus der Formation, fliegt in einer Schwungbahn auf das Spielerschiff zu (dabei findet der Laser-/Gegenfeuer-Austausch aus der vorherigen Runde statt), explodiert bei Zerstörung, oder fliegt bei Nicht-Zerstörung sichtbar zurück in die Formation statt einfach zu verschwinden.
+4. **Optional, falls Aufwand vertretbar:** Einfache, erodierende Sichtblöcke vor dem Schiff (Anspielung auf Space Invaders' Bunker), die mit jedem Bomber-Treffer der laufenden Welle sichtbar kleiner werden — rein dekorative Ableitung aus bereits vorhandenen Gefechtsdaten (Anzahl Bomber-Treffer), keine neue Spielmechanik/kein neuer Zustand in der Engine.
+
+**Ausdrücklich weiterhin:** keine Spieler-Steuerung, keine Änderung an `BoostBarrageEngine.ts`, den Upgrade-Achsen oder der Blind-Erwartungswert-Garantie.
+
 ### 4.5 Automat 4 — "Champion's Ledger" (Street-Fighter-Twist)
 
 - **Thema:** Angriffs-/Block-/Konter-Tokens werden vorab gegen einen Gegner mit rotierendem Verhaltens-Zyklus geplant

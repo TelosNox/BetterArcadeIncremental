@@ -1,8 +1,8 @@
 import { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
-import { BoostBarrageEngine } from '../../engine/BoostBarrageEngine';
+import { BoostBarrageEngine, type EncounterResult } from '../../engine/BoostBarrageEngine';
 import { gainKnowledgeFromManualPlay } from '../../engine/AttendantEngine';
-import type { BoostBarrageBoostType, BoostBarrageMachineConfig, MachineUpgradeDef } from '../../engine/types';
+import type { BoostBarrageBoostType, BoostBarrageEnemyType, BoostBarrageMachineConfig, MachineUpgradeDef } from '../../engine/types';
 import {
     getBoostColor,
     getBoostPowerLevel,
@@ -31,44 +31,91 @@ import { createMilestonePips, updateMilestonePips } from './milestonePips';
 //
 // Rundenstruktur (game-spec.md 4.4 "Rundenstruktur"): KEINE gesonderte
 // Planungsphase -- ein Lauf besteht aus einer festen Wellenanzahl, jede Welle
-// laeuft automatisch und live ab. Diese Szene treibt eine kontinuierliche
-// Gefechts-Schleife: pro Gefecht wird zuerst das aktuelle Roster mit dem
-// naechsten (noch unaufgeloesten) Gegner angezeigt, boost-Buttons bleiben die
-// ganze Zeit ueber klickbar, nach `getWarningWindowMs(...)` Echtzeit-
-// Verzoegerung (das ist das "grosszuegig bemessene Aktivierungsfenster" aus
-// game-spec.md 4.4 -- rein UI-Timing, siehe BoostBarrageEngine.ts-Kommentar)
-// wird das Gefecht aufgeloest. Nach der letzten Welle startet sofort ein
-// neuer Lauf, ohne Zwischenschritt (wie bei Trap Tunnels/Greed Run).
+// laeuft automatisch und live ab. Boost-Buttons bleiben die ganze Zeit ueber
+// klickbar, nach `getWarningWindowMs(...)` Echtzeit-Verzoegerung (das
+// "grosszuegig bemessene Aktivierungsfenster" aus game-spec.md 4.4 -- rein
+// UI-Timing, siehe BoostBarrageEngine.ts-Kommentar) wird das Gefecht
+// aufgeloest. Nach der letzten Welle startet sofort ein neuer Lauf.
+//
+// Bewegungs-/Kampf-Animation (game-spec.md 4.4 "Bewegungs-/Kampf-Animation",
+// vierte Playtest-Korrektur 2026-07-11, verbindlich, ERSETZT die vorherige
+// statische "Markierungsbox um den aktuellen Gegner"-Darstellung
+// VOLLSTAENDIG): an Space Invaders/Galaga/Galaxian orientierte Choreografie
+// -- (1) die gesamte noch aktive Formation bewegt sich als EIN starrer Block
+// seitwaerts, prallt an Bildschirmraendern ab und rueckt bei jedem Abprallen
+// ein Stueck naeher, Tempo skaliert mit der Eskalation (engine.
+// getDestroyedCount()); (2) Gegner fliegen zu Wellenbeginn von ausserhalb des
+// Bildschirms ein; (3) der jeweils aufgeloeste Gegner loest sich sichtbar aus
+// der Formation, fliegt in einer Schwungbahn zum Schiff (dort findet der
+// Laser-/Gegenfeuer-Austausch statt), explodiert oder fliegt zurueck in die
+// Formation; (4) optionale, rein dekorative Bunker-Bloecke vor dem Schiff
+// erodieren mit jedem Bomber-Treffer der laufenden Welle. Dafuer wird die
+// Formation zu einer PERSISTENTEN Objekt-Schicht (this.formationSlots),
+// bewusst GETRENNT von `dynamicObjects`/`clearDynamic()` -- letztere werden
+// bei JEDEM Boost-Klick neu gezeichnet (renderPhase()), ein Formations-Sprite
+// darin waere mitten im Sturzangriff zerstoert worden. Ein-mal-Kampf-Effekte
+// (Laser/Explosion/Trefferblitz/Ausweich-Ring) sind ebenfalls von dieser
+// Kopplung befreit: sie loeschen sich ueber ihren eigenen Tween-onComplete
+// selbst, statt ueber eine externe Aufraeum-Liste.
 
-const RESULT_DISPLAY_MS = 900;
-const WAVE_TRANSITION_MS = 700;
-
-// Formation statt flacher Reihe (game-spec.md 4.4 "Visuelle Umsetzung",
-// Korrektur nach Playtest-Screenshot 2026-07-11, Punkt 2): Gegner werden in
-// einem Space-Invaders-artigen Raster aus Zeilen/Spalten angeordnet.
-// `formationPosition` ist eine reine Funktion von (index, count) OHNE
-// Zeitabhaengigkeit -- dieselbe Formel wird sowohl fuer das Rendern des
-// Rosters als auch fuer das Zielen des Kampf-Effekts (playCombatEffect)
-// verwendet, damit Schuss-/Explosions-Effekt garantiert exakt am sichtbaren
-// Icon landen, unabhaengig davon, wie oft encounterIndex zwischendurch schon
-// weitergerueckt ist.
+// Formation-Basisraster (game-spec.md 4.4 "Visuelle Umsetzung" Punkt 2):
+// Space-Invaders-artiges Raster aus Zeilen/Spalten. `formationPosition` ist
+// eine reine Funktion von (index, count) OHNE Zeitabhaengigkeit -- liefert
+// die BASIS-Position einer Formations-Slot, bevor der Bounce-Offset
+// (this.formationOffsetX/Y, siehe update()) addiert wird.
 const FORMATION_ORIGIN = { x: 380, y: 205 };
 const FORMATION_MAX_COLUMNS = 3;
 const FORMATION_COL_SPACING = 110;
 const FORMATION_ROW_SPACING = 68;
 
+// Block-Bewegung (game-spec.md 4.4 "Bewegungs-/Kampf-Animation" Punkt 1).
+const FORMATION_BOUNCE_RANGE = 90; // px Amplitude nach links/rechts
+const FORMATION_BASE_SPEED = 55; // px/s bei destroyedCount=0
+const FORMATION_SPEED_PER_DESTROYED = 20; // px/s zusaetzlich je zerstoertem Gegner dieser Welle (Eskalationskopplung)
+const FORMATION_STEP_DOWN = 12; // px, die Formation rueckt bei jedem Abprallen so weit naeher
+const FORMATION_MAX_DESCENT = 45; // px, Obergrenze, damit die Formation nie bis zu Bunkern/Schiff vordringt
+
+// Einflug-Choreografie (game-spec.md 4.4 Punkt 2, Galaga-Signatur).
+const INTRO_FLIGHT_MS = 420;
+const INTRO_SETTLE_MS = 260;
+const INTRO_STAGGER_MS = 90;
+
+// Sturzangriff (game-spec.md 4.4 Punkt 3, Galaga/Galaxian-Signatur).
+const DIVE_OUT_MS = 320;
+const DIVE_ENGAGE_PAUSE_MS = 180;
+const DIVE_BACK_MS = 320;
+const DIVE_EXPLOSION_PAUSE_MS = 360;
+const POST_DIVE_PAUSE_MS = 200;
+
 // Auswahl-Rahmen ums aktuelle Gefecht -- Konstante statt aus einem Icon-
-// Radius abgeleitet, da die Sprite-Silhouetten (siehe unten) je nach Typ
-// unterschiedlich breit sind (Bomber/Elite bis 56px), der Rahmen aber fuer
-// alle drei gleich gross bleiben soll.
+// Radius abgeleitet, da die Sprite-Silhouetten je nach Typ unterschiedlich
+// breit sind (Bomber/Elite bis 56px), der Rahmen aber fuer alle drei gleich
+// gross bleiben soll.
 const SELECTION_MARKER_SIZE = 66;
 
 // Eigenes Schiff (game-spec.md 4.4 "Visuelle Umsetzung" Punkt 1) -- feste
-// Position in derselben Formations-Spalte, dient als Ausgangspunkt fuer den
-// Schuss-Effekt und als Ziel, wenn ein Bomber trifft.
+// Position, dient als Ausgangspunkt/Ziel des Laser-Effekts und als Referenz
+// fuer den Sturzangriff-Zielpunkt (siehe DIVE_ATTACK_Y_OFFSET).
 const SHIP_POSITION = { x: FORMATION_ORIGIN.x, y: 370 };
+const DIVE_ATTACK_Y_OFFSET = 70;
+const DIVE_ATTACK_X_SPREAD = 34;
 
 const STAR_COUNT = 80;
+
+// Erodierende Bunker-Bloecke (game-spec.md 4.4 Punkt 4, optional, rein
+// dekorativ -- Space-Invaders-Bunker-Anspielung). Position zwischen
+// Sturzangriff-Zielpunkt und Schiff ("vor dem Schiff"). Keine neue Mechanik:
+// jeder Block-Abbau ist eine reine Ableitung aus bereits vorhandenen
+// Gefechtsdaten (Bomber-Treffer der laufenden Welle), kein neuer Engine-
+// Zustand.
+const BUNKER_COUNT = 3;
+const BUNKER_BLOCK_ROWS = 2;
+const BUNKER_BLOCK_COLS = 3;
+const BUNKER_BLOCK_SIZE = 10;
+const BUNKER_BLOCK_GAP = 3;
+const BUNKER_Y = 352;
+const BUNKER_SPACING_X = 150;
+const BUNKER_COLOR = 0x5fa8d3;
 
 // --- Sprite-/Textur-Set (game-spec.md 4.4 "Visuelle Umsetzung", zweite ------
 // Playtest-Korrektur 2026-07-11; CLAUDE.md "Ausnahme Automat 3") ------------
@@ -81,9 +128,9 @@ const STAR_COUNT = 80;
 // Ladepfad, kein Fehlerfall fuer fehlende Dateien) und laesst sich wie die
 // bisherigen Graphics-Primitive direkt mit Werten aus machines.config.ts
 // (Farben) parametrisieren. Alle Punktlisten sind bewusst so gewaehlt, dass
-// ihre Bounding-Box exakt auf der Canvas-Mitte zentriert ist (siehe Kommentar
-// an ensureTextures()) -- sonst wuerde `setOrigin(0.5)` das Sprite sichtbar
-// neben der eigentlichen Formations-/Ziel-Position platzieren.
+// ihre Bounding-Box exakt auf der Canvas-Mitte zentriert ist -- sonst wuerde
+// `setOrigin(0.5)` das Sprite sichtbar neben der eigentlichen Formations-/
+// Ziel-Position platzieren.
 const TEX_SCOUT_SIZE = { width: 40, height: 44 };
 const TEX_BOMBER_SIZE = { width: 56, height: 48 };
 const TEX_ELITE_SIZE = { width: 56, height: 48 };
@@ -135,7 +182,7 @@ const SHIP_POINTS: Phaser.Types.Math.Vector2Like[] = [
     { x: 12, y: 26 },
 ];
 
-const ENEMY_TEXTURE_KEYS: Readonly<Record<'scout' | 'bomber' | 'elite', string>> = {
+const ENEMY_TEXTURE_KEYS: Readonly<Record<BoostBarrageEnemyType, string>> = {
     scout: 'bb-scout',
     bomber: 'bb-bomber',
     elite: 'bb-elite',
@@ -149,16 +196,35 @@ const BOOST_LABELS: Readonly<Record<BoostBarrageBoostType, string>> = {
 };
 const BOOST_ORDER: readonly BoostBarrageBoostType[] = ['firepower', 'shield', 'evade', 'focus'];
 
+// Zustand EINES Formations-Mitglieds (persistente Kampf-/Animationsschicht,
+// siehe Modul-Kommentar oben). `pending`/`resolved-alive` werden von update()
+// per Bounce-Offset bewegt, `diving` ist waehrend des Sturzangriffs davon
+// ausgenommen (eigener Tween-Pfad), `destroyed` ist nur noch ein Platzhalter-
+// Status nach dem Entfernen aus dem Array (wird praktisch nie gehalten,
+// slot wird bei Zerstoerung stattdessen aus formationSlots entfernt).
+type FormationStatus = 'pending' | 'diving' | 'resolved-alive';
+
+interface FormationSlot {
+    index: number;
+    type: BoostBarrageEnemyType;
+    image: Phaser.GameObjects.Image;
+    label: Phaser.GameObjects.Text;
+    baseX: number;
+    baseY: number;
+    status: FormationStatus;
+}
+
 export class BoostBarrageScene extends Scene {
     private config!: BoostBarrageMachineConfig;
     private engine: BoostBarrageEngine | null = null;
     private feedback = '';
     private milestonesReachedBeforeRun = 0;
-    // Bomber-Blink-Warnung (game-spec.md 4.4 "sichtbar signalisiert (Blink-
-    // Warnung)") -- eigens getrackte Tweens, damit clearDynamic() sie VOR dem
-    // Zerstoeren der zugehoerigen GameObjects stoppt (ein weiterlaufender
-    // Tween auf einem bereits zerstoerten Objekt wuerfe sonst Laufzeitfehler).
-    private dynamicTweens: Phaser.Tweens.Tween[] = [];
+    private bomberHitsThisWave = 0;
+
+    // UI-Chrome (Boost-Buttons/Upgrade-Shop/Zur-Halle-Button) -- bewusst
+    // GETRENNT von der Formations-/Kampf-Schicht (siehe Modul-Kommentar
+    // oben), da diese Objekte bei JEDEM Boost-Klick neu gezeichnet werden.
+    private dynamicObjects: Phaser.GameObjects.GameObject[] = [];
 
     private scoreText!: Phaser.GameObjects.Text;
     private feedbackText!: Phaser.GameObjects.Text;
@@ -166,11 +232,20 @@ export class BoostBarrageScene extends Scene {
     private statusText!: Phaser.GameObjects.Text;
     private attendantStatusText!: Phaser.GameObjects.Text;
     private milestonePips: Phaser.GameObjects.Shape[] = [];
-    private dynamicObjects: Phaser.GameObjects.GameObject[] = [];
-    // Statisches Spielerschiff (game-spec.md 4.4 "Visuelle Umsetzung" Punkt 1)
-    // -- bleibt ueber die gesamte Szenen-Lebensdauer bestehen, wird NICHT ueber
-    // clearDynamic() entfernt, nur kurz angeflackert bei einem Bomber-Treffer.
+    // Statisches Spielerschiff -- bleibt ueber die gesamte Szenen-
+    // Lebensdauer bestehen, wird nur kurz angeflackert bei einem Bomber-Treffer.
     private shipShape!: Phaser.GameObjects.Image;
+
+    // --- Formations-/Kampf-Schicht (persistent, siehe Modul-Kommentar) -----
+    private formationSlots: FormationSlot[] = [];
+    private formationOffsetX = 0;
+    private formationOffsetY = 0;
+    private formationDirection = 1;
+    private formationBounceActive = false;
+    private selectionMarker: Phaser.GameObjects.Rectangle | null = null;
+    private bomberBlinkTween: Phaser.Tweens.Tween | null = null;
+    private currentTargetSlot: FormationSlot | null = null;
+    private bunkerBlocks: Phaser.GameObjects.Rectangle[] = [];
 
     constructor() {
         super('BoostBarrage');
@@ -239,13 +314,43 @@ export class BoostBarrageScene extends Scene {
         this.startNewRun();
     }
 
+    // Phaser-Lifecycle-Hook, wird automatisch pro Frame aufgerufen (siehe
+    // Modul-Kommentar "Bewegungs-/Kampf-Animation" Punkt 1) -- treibt
+    // ausschliesslich die Block-Bounce-Bewegung der Formation, voellig
+    // unabhaengig vom UI-Redraw-Zyklus (renderPhase()/clearDynamic()).
+    update(_time: number, delta: number): void {
+        if (!this.formationBounceActive || !this.engine) return;
+
+        const destroyedCount = this.engine.getDestroyedCount();
+        const speed = FORMATION_BASE_SPEED + destroyedCount * FORMATION_SPEED_PER_DESTROYED;
+        this.formationOffsetX += this.formationDirection * speed * (delta / 1000);
+
+        if (this.formationOffsetX >= FORMATION_BOUNCE_RANGE) {
+            this.formationOffsetX = FORMATION_BOUNCE_RANGE;
+            this.formationDirection = -1;
+            this.formationOffsetY = Math.min(FORMATION_MAX_DESCENT, this.formationOffsetY + FORMATION_STEP_DOWN);
+        } else if (this.formationOffsetX <= -FORMATION_BOUNCE_RANGE) {
+            this.formationOffsetX = -FORMATION_BOUNCE_RANGE;
+            this.formationDirection = 1;
+            this.formationOffsetY = Math.min(FORMATION_MAX_DESCENT, this.formationOffsetY + FORMATION_STEP_DOWN);
+        }
+
+        this.formationSlots.forEach((slot) => {
+            if (slot.status === 'diving') return;
+            slot.image.setPosition(slot.baseX + this.formationOffsetX, slot.baseY + this.formationOffsetY);
+            slot.label.setPosition(slot.image.x, slot.image.y);
+        });
+
+        if (this.selectionMarker && this.currentTargetSlot) {
+            this.selectionMarker.setPosition(this.currentTargetSlot.image.x, this.currentTargetSlot.image.y);
+        }
+    }
+
     private getOwnedUpgradeIds(): readonly string[] {
         return economyStore.getMachineUpgrades(this.config.id);
     }
 
     private clearDynamic(): void {
-        this.dynamicTweens.forEach((tween) => tween.stop());
-        this.dynamicTweens = [];
         this.dynamicObjects.forEach((obj) => obj.destroy());
         this.dynamicObjects = [];
     }
@@ -275,8 +380,7 @@ export class BoostBarrageScene extends Scene {
         this.dynamicObjects.push(bg, text);
     }
 
-    // --- Weltraum-Kulisse + Schiff (einmalig, game-spec.md 4.4 -------------
-    // "Visuelle Umsetzung" Punkte 1+4) ---------------------------------------
+    // --- Weltraum-Kulisse + Schiff (einmalig) -------------------------------
 
     private renderStarfield(): void {
         for (let i = 0; i < STAR_COUNT; i += 1) {
@@ -380,8 +484,8 @@ export class BoostBarrageScene extends Scene {
         g.destroy();
     }
 
-    // --- Statische Legende (einmalig, game-spec.md 4.4 + CLAUDE.md ---------
-    // Barrierefreiheits-Grundsatz: Form/Symbol UND Farbe, nie Farbe allein) --
+    // --- Statische Legende (einmalig, CLAUDE.md Barrierefreiheits-Grundsatz:
+    // Form/Symbol UND Farbe, nie Farbe allein) -------------------------------
 
     private renderLegend(): void {
         const x = 720;
@@ -413,11 +517,11 @@ export class BoostBarrageScene extends Scene {
         }
     }
 
-    // --- Roster-Darstellung ---------------------------------------------------
+    // --- Formations-/Kampf-Schicht (persistent, siehe Modul-Kommentar) -----
 
-    // Space-Invaders-artiges Raster statt flacher Reihe (siehe Kommentar bei
-    // FORMATION_ORIGIN oben) -- fuellt Zeilen der Reihe nach, letzte Zeile wird
-    // eigenstaendig zentriert, falls sie nicht komplett gefuellt ist.
+    // Space-Invaders-artiges Raster statt flacher Reihe -- fuellt Zeilen der
+    // Reihe nach, letzte Zeile wird eigenstaendig zentriert, falls sie nicht
+    // komplett gefuellt ist. Liefert die BASIS-Position (vor Bounce-Offset).
     private formationPosition(index: number, count: number): { x: number; y: number } {
         const columns = Math.min(FORMATION_MAX_COLUMNS, count);
         const rows = Math.ceil(count / columns);
@@ -431,50 +535,298 @@ export class BoostBarrageScene extends Scene {
         };
     }
 
-    private drawEnemyIcon(x: number, y: number, type: 'scout' | 'bomber' | 'elite', dimmed: boolean): Phaser.GameObjects.Image {
-        const color = getEnemyTypeColor(type);
-        const alpha = dimmed ? 0.35 : 1;
-        const image = this.add.image(x, y, ENEMY_TEXTURE_KEYS[type]).setTint(color).setAlpha(alpha);
-        this.dynamicObjects.push(image);
+    private createEnemySprite(
+        x: number,
+        y: number,
+        type: BoostBarrageEnemyType,
+    ): { image: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text } {
+        const image = this.add.image(x, y, ENEMY_TEXTURE_KEYS[type]).setTint(getEnemyTypeColor(type));
         const label = this.add
             .text(x, y, getEnemyTypeLabel(type), { fontFamily: 'Arial Black', fontSize: 12, color: '#000000' })
-            .setOrigin(0.5)
-            .setAlpha(alpha);
-        this.dynamicObjects.push(label);
-        return image;
+            .setOrigin(0.5);
+        return { image, label };
     }
 
-    private renderRoster(): void {
-        if (!this.engine) return;
-        const roster = this.engine.getRoster();
-        const currentIndex = this.engine.getCurrentEncounterIndex();
+    // Setzt die Formations-Schicht fuer eine neue Welle zurueck -- zerstoert
+    // alle verbliebenen Sprites/Marker/Tweens der VORHERIGEN Welle. Wird
+    // ausschliesslich von beginWave() aufgerufen, NIEMALS von renderPhase().
+    private resetFormation(): void {
+        this.formationBounceActive = false;
+        this.formationOffsetX = 0;
+        this.formationOffsetY = 0;
+        this.formationDirection = 1;
+        this.clearSelectionMarker();
+        this.formationSlots.forEach((slot) => {
+            slot.image.destroy();
+            slot.label.destroy();
+        });
+        this.formationSlots = [];
+    }
 
+    // Einflug-Choreografie (game-spec.md 4.4 Punkt 2, Galaga-Signatur):
+    // Gegner spawnen ausserhalb des Bildschirms (abwechselnd links/rechts),
+    // fliegen ueber einen Zwischenpunkt oberhalb der Formation in ihre
+    // Ziel-Slots ein (Cubic/Back-Easing statt linear -- wirkt wie ein
+    // "Hereinschwingen und Einrasten" statt einer starren Translation),
+    // zeitlich pro Gegner leicht versetzt (INTRO_STAGGER_MS). Aktiviert die
+    // Bounce-Bewegung erst, wenn ALLE Gegner eingeflogen sind.
+    private spawnWaveIntro(roster: readonly BoostBarrageEnemyType[], onComplete: () => void): void {
+        if (roster.length === 0) {
+            this.formationBounceActive = true;
+            onComplete();
+            return;
+        }
+
+        let remaining = roster.length;
         roster.forEach((type, index) => {
-            const { x, y } = this.formationPosition(index, roster.length);
-            const isCurrent = index === currentIndex;
-            const shape = this.drawEnemyIcon(x, y, type, index < currentIndex);
+            const { x: baseX, y: baseY } = this.formationPosition(index, roster.length);
+            const fromLeft = index % 2 === 0;
+            const spawnX = fromLeft ? -60 : 1084;
+            const spawnY = FORMATION_ORIGIN.y - 200;
+            const midX = baseX;
+            const midY = FORMATION_ORIGIN.y - 70;
 
-            if (isCurrent) {
-                const marker = this.add
-                    .rectangle(x, y, SELECTION_MARKER_SIZE, SELECTION_MARKER_SIZE)
-                    .setStrokeStyle(3, 0xffffff);
-                this.dynamicObjects.push(marker);
+            const { image, label } = this.createEnemySprite(spawnX, spawnY, type);
+            const slot: FormationSlot = { index, type, image, label, baseX, baseY, status: 'pending' };
+            this.formationSlots.push(slot);
 
-                // Bomber-Blink-Warnung (game-spec.md 4.4 "sichtbar signalisiert
-                // (Blink-Warnung) bevor er ausloest") -- zusaetzlich zur eigenen
-                // Form/Farbe, kein alleiniges Farbmerkmal.
-                if (type === 'bomber') {
-                    const tween = this.tweens.add({
-                        targets: shape,
-                        alpha: 0.3,
-                        duration: 350,
-                        yoyo: true,
-                        repeat: -1,
+            this.tweens.add({
+                targets: [image, label],
+                x: midX,
+                y: midY,
+                duration: INTRO_FLIGHT_MS,
+                delay: index * INTRO_STAGGER_MS,
+                ease: 'Sine.easeIn',
+                onComplete: () => {
+                    this.tweens.add({
+                        targets: [image, label],
+                        x: baseX,
+                        y: baseY,
+                        duration: INTRO_SETTLE_MS,
+                        ease: 'Back.easeOut',
+                        onComplete: () => {
+                            remaining -= 1;
+                            if (remaining === 0) {
+                                this.formationBounceActive = true;
+                                onComplete();
+                            }
+                        },
                     });
-                    this.dynamicTweens.push(tween);
+                },
+            });
+        });
+    }
+
+    // Markiert den aktuellen Ziel-Gegner (weisser Rahmen, Bomber zusaetzlich
+    // blinkend -- game-spec.md 4.4 "sichtbar signalisiert (Blink-Warnung)",
+    // zusaetzlich zur eigenen Form/Farbe, kein alleiniges Farbmerkmal). Wird
+    // NEU gesetzt, sobald engine.getCurrentEncounterIndex() vorrueckt, und
+    // waehrend update() jeden Frame auf die (durch den Bounce bewegte)
+    // Sprite-Position nachgefuehrt.
+    private updateSelectionMarker(): void {
+        this.clearSelectionMarker();
+        if (!this.engine) return;
+        const idx = this.engine.getCurrentEncounterIndex();
+        const slot = this.formationSlots.find((s) => s.index === idx && s.status === 'pending');
+        if (!slot) return;
+
+        this.currentTargetSlot = slot;
+        this.selectionMarker = this.add
+            .rectangle(slot.image.x, slot.image.y, SELECTION_MARKER_SIZE, SELECTION_MARKER_SIZE)
+            .setStrokeStyle(3, 0xffffff);
+
+        if (slot.type === 'bomber') {
+            this.bomberBlinkTween = this.tweens.add({
+                targets: slot.image,
+                alpha: 0.3,
+                duration: 350,
+                yoyo: true,
+                repeat: -1,
+            });
+        }
+    }
+
+    private clearSelectionMarker(): void {
+        if (this.bomberBlinkTween) {
+            this.bomberBlinkTween.stop();
+            this.bomberBlinkTween = null;
+        }
+        if (this.currentTargetSlot) {
+            this.currentTargetSlot.image.setAlpha(1);
+            this.currentTargetSlot.label.setAlpha(1);
+        }
+        this.currentTargetSlot = null;
+        if (this.selectionMarker) {
+            this.selectionMarker.destroy();
+            this.selectionMarker = null;
+        }
+    }
+
+    // Sturzangriff (game-spec.md 4.4 Punkt 3, Galaga/Galaxian-Signatur):
+    // loest den aufgeloesten Gegner sichtbar aus der Formation (status
+    // 'diving' -- ab hier von update()s Bounce-Bewegung ausgenommen, fliegt
+    // stattdessen ueber einen eigenen Tween zu einem Angriffspunkt nahe dem
+    // Schiff), spielt dort den Laser-/Gegenfeuer-Austausch, und loest danach
+    // auf: zerstoert -> Explosion + Sprite entfernen; ueberlebt -> Ruecksturz
+    // in den (inzwischen durch den Bounce weitergewanderten) Formations-Slot.
+    private runDiveAttack(result: EncounterResult, onComplete: () => void): void {
+        this.clearSelectionMarker();
+        const slot = this.formationSlots.find((s) => s.index === result.encounterIndex);
+        if (!slot) {
+            onComplete();
+            return;
+        }
+
+        slot.status = 'diving';
+        slot.image.setAlpha(1);
+        slot.label.setAlpha(1);
+
+        const attackPoint = {
+            x: SHIP_POSITION.x + (result.encounterIndex % 2 === 0 ? -DIVE_ATTACK_X_SPREAD : DIVE_ATTACK_X_SPREAD),
+            y: SHIP_POSITION.y - DIVE_ATTACK_Y_OFFSET,
+        };
+
+        this.tweens.add({
+            targets: [slot.image, slot.label],
+            x: attackPoint.x,
+            y: attackPoint.y,
+            duration: DIVE_OUT_MS,
+            ease: 'Cubic.easeIn',
+            onComplete: () => this.resolveDiveOutcome(result, slot, attackPoint, onComplete),
+        });
+    }
+
+    private resolveDiveOutcome(
+        result: EncounterResult,
+        slot: FormationSlot,
+        attackPoint: { x: number; y: number },
+        onComplete: () => void,
+    ): void {
+        if (result.destroyed) {
+            this.fireShotLine(SHIP_POSITION, attackPoint, 0xffe066);
+            this.spawnExplosion(attackPoint);
+            this.time.delayedCall(DIVE_EXPLOSION_PAUSE_MS, () => {
+                slot.image.destroy();
+                slot.label.destroy();
+                this.formationSlots = this.formationSlots.filter((s) => s !== slot);
+                onComplete();
+            });
+            return;
+        }
+
+        if (result.payout < 0) {
+            this.fireShotLine(attackPoint, SHIP_POSITION, 0xff5555);
+            this.spawnShipHitFlash();
+        } else {
+            this.fireShotLine(SHIP_POSITION, attackPoint, 0x9fb4c7);
+            this.spawnEscapeRing(attackPoint);
+        }
+
+        this.time.delayedCall(DIVE_ENGAGE_PAUSE_MS, () => {
+            const returnX = slot.baseX + this.formationOffsetX;
+            const returnY = slot.baseY + this.formationOffsetY;
+            this.tweens.add({
+                targets: [slot.image, slot.label],
+                x: returnX,
+                y: returnY,
+                duration: DIVE_BACK_MS,
+                ease: 'Cubic.easeOut',
+                onComplete: () => {
+                    slot.status = 'resolved-alive';
+                    slot.image.setAlpha(0.35);
+                    slot.label.setAlpha(0.35);
+                    onComplete();
+                },
+            });
+        });
+    }
+
+    // --- Ein-mal-Kampf-Effekte (loeschen sich ueber ihren eigenen Tween- ----
+    // onComplete SELBST -- bewusst KEINE externe Aufraeum-Liste, siehe -------
+    // Modul-Kommentar oben) ---------------------------------------------------
+
+    // Laser-Sprite: auf die Schuss-Distanz gestreckt (setDisplaySize) und um
+    // den Schusswinkel rotiert, dieselbe neutrale Textur wird pro Gefechts-
+    // Ausgang unterschiedlich eingefaerbt (Gold=zerstoert, Rot=Bomber trifft,
+    // Silber=ausgewichen, siehe resolveDiveOutcome()).
+    private fireShotLine(from: { x: number; y: number }, to: { x: number; y: number }, color: number): void {
+        const angle = Phaser.Math.Angle.Between(from.x, from.y, to.x, to.y);
+        const distance = Phaser.Math.Distance.Between(from.x, from.y, to.x, to.y);
+        const bolt = this.add
+            .image((from.x + to.x) / 2, (from.y + to.y) / 2, 'bb-laser')
+            .setTint(color)
+            .setRotation(angle)
+            .setDisplaySize(Math.max(distance, TEX_LASER_SIZE.width), TEX_LASER_SIZE.height);
+        this.tweens.add({ targets: bolt, alpha: 0, duration: 450, delay: 120, onComplete: () => bolt.destroy() });
+    }
+
+    // "Zerstoert" -- Explosions-Sprite + expandierender Ring, farblich UND
+    // formal (gefuellter Burst vs. reiner Ring) unterscheidbar vom Ausweich-
+    // Effekt unten.
+    private spawnExplosion(pos: { x: number; y: number }): void {
+        const burst = this.add.image(pos.x, pos.y, 'bb-explosion').setScale(0.5);
+        const ring = this.add.circle(pos.x, pos.y, 10).setStrokeStyle(3, 0xffd700);
+        this.tweens.add({ targets: burst, scale: 1.5, alpha: 0, duration: 400, onComplete: () => burst.destroy() });
+        this.tweens.add({ targets: ring, scale: 2.6, alpha: 0, duration: 450, onComplete: () => ring.destroy() });
+    }
+
+    // "Bomber trifft" -- Einschlag-Burst am Schiff plus kurzes Anflackern des
+    // Schiffs selbst (Schiff bleibt bestehen, nur ein sichtbarer Treffer).
+    private spawnShipHitFlash(): void {
+        const burst = this.add.circle(SHIP_POSITION.x, SHIP_POSITION.y, 14, 0xff3333).setAlpha(0.85);
+        this.tweens.add({ targets: burst, scale: 2.2, alpha: 0, duration: 400, onComplete: () => burst.destroy() });
+        this.tweens.add({
+            targets: this.shipShape,
+            alpha: 0.25,
+            duration: 90,
+            yoyo: true,
+            repeat: 1,
+        });
+    }
+
+    // "Elite entkommt"/Angriff ausgewichen -- reiner, kuehler Ring OHNE
+    // Fuellung, bewusst deutlich von der Explosion (gefuellter Blitz) und dem
+    // Treffer-Burst (am Schiff, nicht am Ziel) unterscheidbar.
+    private spawnEscapeRing(pos: { x: number; y: number }): void {
+        const ring = this.add.circle(pos.x, pos.y, 12).setStrokeStyle(3, 0xaad4ff);
+        this.tweens.add({ targets: ring, scale: 2.4, alpha: 0, duration: 500, onComplete: () => ring.destroy() });
+    }
+
+    // --- Bunker (game-spec.md 4.4 Punkt 4, optional/dekorativ) --------------
+
+    private createBunkers(): void {
+        this.bunkerBlocks = [];
+        for (let b = 0; b < BUNKER_COUNT; b += 1) {
+            const bunkerX = SHIP_POSITION.x + (b - 1) * BUNKER_SPACING_X;
+            for (let row = 0; row < BUNKER_BLOCK_ROWS; row += 1) {
+                for (let col = 0; col < BUNKER_BLOCK_COLS; col += 1) {
+                    const x = bunkerX + (col - (BUNKER_BLOCK_COLS - 1) / 2) * (BUNKER_BLOCK_SIZE + BUNKER_BLOCK_GAP);
+                    const y = BUNKER_Y + row * (BUNKER_BLOCK_SIZE + BUNKER_BLOCK_GAP);
+                    const block = this.add
+                        .rectangle(x, y, BUNKER_BLOCK_SIZE, BUNKER_BLOCK_SIZE, BUNKER_COLOR)
+                        .setStrokeStyle(1, 0x2c3e50);
+                    this.bunkerBlocks.push(block);
                 }
             }
-        });
+        }
+    }
+
+    private resetBunkers(): void {
+        this.bomberHitsThisWave = 0;
+        this.bunkerBlocks.forEach((block) => block.destroy());
+        this.bunkerBlocks = [];
+        this.createBunkers();
+    }
+
+    // Entfernt EINEN zufaelligen verbliebenen Block -- rein dekorative
+    // Ableitung aus der Anzahl Bomber-Treffer dieser Welle (applyEncounter-
+    // Result()), kein neuer Engine-Zustand, keine Spielauswirkung.
+    private registerBomberHit(): void {
+        this.bomberHitsThisWave += 1;
+        if (this.bunkerBlocks.length === 0) return;
+        const idx = Math.floor(Math.random() * this.bunkerBlocks.length);
+        const [removed] = this.bunkerBlocks.splice(idx, 1);
+        removed.destroy();
     }
 
     // --- Boost-Aktivierung -----------------------------------------------
@@ -512,91 +864,8 @@ export class BoostBarrageScene extends Scene {
         });
     }
 
-    // --- Kampf-Feedback pro Gefecht (game-spec.md 4.4 "Visuelle Umsetzung" -
-    // Punkt 3) -- ausgeloest von runLoop() direkt NACH renderPhase(), damit
-    // formationPosition() denselben Index/Count-Stand nutzt wie die gerade neu
-    // gezeichneten (bereits abgedunkelten) Roster-Icons. Alle erzeugten
-    // Objekte/Tweens landen in dynamicObjects/dynamicTweens und werden von der
-    // naechsten renderPhase()-clearDynamic() wieder entfernt -- bewusst KEINE
-    // eigene Aufraeum-Logik noetig.
-
-    // Laser-Sprite statt Linien-Primitiv (game-spec.md 4.4 "Schuss-/Laser-
-    // Effekt") -- auf die Schuss-Distanz gestreckt (setDisplaySize) und um den
-    // Schusswinkel rotiert, dieselbe neutrale Textur wird per Tint pro
-    // Gefechts-Ausgang unterschiedlich eingefaerbt (aufgerufen mit Gold/Rot/
-    // Silber, siehe playCombatEffect()).
-    private fireShotLine(from: { x: number; y: number }, to: { x: number; y: number }, color: number): void {
-        const angle = Phaser.Math.Angle.Between(from.x, from.y, to.x, to.y);
-        const distance = Phaser.Math.Distance.Between(from.x, from.y, to.x, to.y);
-        const bolt = this.add
-            .image((from.x + to.x) / 2, (from.y + to.y) / 2, 'bb-laser')
-            .setTint(color)
-            .setRotation(angle)
-            .setDisplaySize(Math.max(distance, TEX_LASER_SIZE.width), TEX_LASER_SIZE.height);
-        this.dynamicObjects.push(bolt);
-        const tween = this.tweens.add({ targets: bolt, alpha: 0, duration: 450, delay: 120 });
-        this.dynamicTweens.push(tween);
-    }
-
-    // "Zerstoert" -- Explosions-Sprite (game-spec.md 4.4) + expandierender
-    // Ring, farblich UND formal (gefuellter Burst vs. reiner Ring) unter-
-    // scheidbar vom Ausweich-Effekt unten.
-    private spawnExplosion(pos: { x: number; y: number }): void {
-        const burst = this.add.image(pos.x, pos.y, 'bb-explosion').setScale(0.5);
-        const ring = this.add.circle(pos.x, pos.y, 10).setStrokeStyle(3, 0xffd700);
-        this.dynamicObjects.push(burst, ring);
-        const burstTween = this.tweens.add({ targets: burst, scale: 1.5, alpha: 0, duration: 400 });
-        const ringTween = this.tweens.add({ targets: ring, scale: 2.6, alpha: 0, duration: 450 });
-        this.dynamicTweens.push(burstTween, ringTween);
-    }
-
-    // "Bomber trifft" -- Einschlag-Burst am Schiff plus kurzes Anflackern des
-    // Schiffs selbst (Schiff bleibt bestehen, nur ein sichtbarer Treffer).
-    // Flacker-Dauer bewusst deutlich unter WAVE_TRANSITION_MS gehalten, damit
-    // sie sicher durchlaeuft, bevor die naechste clearDynamic() sie stoppt.
-    private spawnShipHitFlash(): void {
-        const burst = this.add.circle(SHIP_POSITION.x, SHIP_POSITION.y, 14, 0xff3333).setAlpha(0.85);
-        this.dynamicObjects.push(burst);
-        const burstTween = this.tweens.add({ targets: burst, scale: 2.2, alpha: 0, duration: 400 });
-        this.dynamicTweens.push(burstTween);
-        const shipTween = this.tweens.add({
-            targets: this.shipShape,
-            alpha: 0.25,
-            duration: 90,
-            yoyo: true,
-            repeat: 1,
-        });
-        this.dynamicTweens.push(shipTween);
-    }
-
-    // "Elite entkommt"/Angriff ausgewichen -- reiner, kuehler Ring OHNE
-    // Fuellung, bewusst deutlich von der Explosion (gefuellter Blitz) und dem
-    // Treffer-Burst (am Schiff, nicht am Ziel) unterscheidbar.
-    private spawnEscapeRing(pos: { x: number; y: number }): void {
-        const ring = this.add.circle(pos.x, pos.y, 12).setStrokeStyle(3, 0xaad4ff);
-        this.dynamicObjects.push(ring);
-        const tween = this.tweens.add({ targets: ring, scale: 2.4, alpha: 0, duration: 500 });
-        this.dynamicTweens.push(tween);
-    }
-
-    private playCombatEffect(result: ReturnType<BoostBarrageEngine['resolveNextEncounter']>, rosterLength: number): void {
-        const target = this.formationPosition(result.encounterIndex, rosterLength);
-
-        if (result.destroyed) {
-            this.fireShotLine(SHIP_POSITION, target, 0xffe066);
-            this.spawnExplosion(target);
-        } else if (result.payout < 0) {
-            this.fireShotLine(target, SHIP_POSITION, 0xff5555);
-            this.spawnShipHitFlash();
-        } else {
-            this.fireShotLine(SHIP_POSITION, target, 0x9fb4c7);
-            this.spawnEscapeRing(target);
-        }
-    }
-
-    // --- Automaten-interne Upgrade-Achsen (game-spec.md 4.4, drei ----------
-    // unabhaengige Leitern, bewusst OHNE Kreuz-Preis-Kopplung, analog zu ------
-    // Trap Tunnels/Greed Run) ------------------------------------------------
+    // --- Automaten-interne Upgrade-Achsen (drei unabhaengige Leitern, ------
+    // bewusst OHNE Kreuz-Preis-Kopplung, analog zu Trap Tunnels/Greed Run) ---
 
     private renderUpgradeLadderShop(y: number, ladder: readonly MachineUpgradeDef[], owned: readonly string[]): void {
         const nextUpgrade = ladder.find((upgrade) => !owned.includes(upgrade.id));
@@ -674,7 +943,8 @@ export class BoostBarrageScene extends Scene {
         this.makeButton(100, 24, 160, 40, 'Zur Halle', () => EventBus.emit('return-to-hall'), 0x34495e);
     }
 
-    // --- Master-Render ---------------------------------------------------
+    // --- Master-Render (nur UI-Chrome, siehe Modul-Kommentar -- Formations-/
+    // Kampf-Schicht laeuft komplett unabhaengig davon) -----------------------
 
     private renderPhase(): void {
         this.clearDynamic();
@@ -687,7 +957,6 @@ export class BoostBarrageScene extends Scene {
         this.updateWaveText();
         this.updateStatusText();
 
-        this.renderRoster();
         this.renderBoostButtons();
         this.renderUpgradeShop();
     }
@@ -705,7 +974,21 @@ export class BoostBarrageScene extends Scene {
             economyStore.getMachinePeakScore(this.config.id).toNumber(),
         ).length;
         this.renderPhase();
-        this.runLoop();
+        this.beginWave();
+    }
+
+    // Einziger Einstiegspunkt fuer den Beginn EINER Welle (erste Welle eines
+    // Laufs UND jede Folgewelle) -- setzt Formation/Bunker zurueck, spielt die
+    // Einflug-Choreografie, und uebergibt danach an runLoop().
+    private beginWave(): void {
+        if (!this.engine) return;
+        this.resetFormation();
+        this.resetBunkers();
+        const roster = this.engine.getRoster();
+        this.spawnWaveIntro(roster, () => {
+            this.updateSelectionMarker();
+            this.runLoop();
+        });
     }
 
     private runLoop(): void {
@@ -719,7 +1002,7 @@ export class BoostBarrageScene extends Scene {
         if (engine.isWaveComplete()) {
             engine.startNextWave();
             this.renderPhase();
-            this.time.delayedCall(WAVE_TRANSITION_MS, () => this.runLoop());
+            this.beginWave();
             return;
         }
 
@@ -727,22 +1010,29 @@ export class BoostBarrageScene extends Scene {
         const owned = this.getOwnedUpgradeIds();
         const delay = getWarningWindowMs(this.config, owned);
         this.time.delayedCall(delay, () => {
-            const rosterLength = engine.getRoster().length;
             const result = engine.resolveNextEncounter();
             this.applyEncounterResult(result);
             this.renderPhase();
-            this.playCombatEffect(result, rosterLength);
-            this.time.delayedCall(RESULT_DISPLAY_MS, () => this.runLoop());
+            this.runDiveAttack(result, () => {
+                if (!engine.isWaveComplete()) {
+                    this.updateSelectionMarker();
+                }
+                this.time.delayedCall(POST_DIVE_PAUSE_MS, () => this.runLoop());
+            });
         });
     }
 
-    private applyEncounterResult(result: ReturnType<BoostBarrageEngine['resolveNextEncounter']>): void {
+    private applyEncounterResult(result: EncounterResult): void {
         economyStore.applyMachineScoreDelta(this.config.id, result.payout);
 
         const ticketYieldRate = getTicketYieldRate(economyStore.getState().hallUpgrades);
         const hallTicketsGained = Math.max(0, result.payout) * this.config.ticketYieldFactor * ticketYieldRate;
         if (hallTicketsGained > 0) {
             economyStore.addHallTickets(hallTicketsGained);
+        }
+
+        if (!result.destroyed && result.payout < 0) {
+            this.registerBomberHit();
         }
 
         const typeLabel = getEnemyTypeLabel(result.type);
@@ -752,10 +1042,10 @@ export class BoostBarrageScene extends Scene {
         this.feedback = `${typeLabel}-Gegner ${outcomeLabel} (${sign}${result.payout.toFixed(1)} Punkte, +${hallTicketsGained.toFixed(2)} Tickets)${boostSuffix}.`;
     }
 
-    // Rundenstruktur (game-spec.md 4.4): der Lauf endet nach der letzten
-    // Welle IMMER unwiderruflich, direkt danach startet automatisch der
-    // naechste Lauf -- kein Fokus-Popup/keine "beibehalten"-Checkbox (analog
-    // zu Trap Tunnels/Greed Run).
+    // Rundenstruktur: der Lauf endet nach der letzten Welle IMMER
+    // unwiderruflich, direkt danach startet automatisch der naechste Lauf --
+    // kein Fokus-Popup/keine "beibehalten"-Checkbox (analog zu Trap Tunnels/
+    // Greed Run).
     private finishRun(): void {
         const peak = economyStore.getMachinePeakScore(this.config.id).toNumber();
         const reachedNow = getReachedMilestones(this.config, peak).length;
